@@ -8,7 +8,7 @@
 
 - `python main.py` 可以运行。
 - `python -m compileall app tests` 可以通过。
-- 文档类文件统一放在 `规划/`。
+- 文档类文件统一放在 `planning/`。
 - Python 缓存文件已加入 `.gitignore`。
 
 本规划目标是把项目拆成可连续实现、可测试、接口清晰的阶段，优先完成 MVP：
@@ -78,9 +78,10 @@ AI-Barrage-Companion/
     test_barrage_manager.py
     test_ai_service.py
 
-  规划/
-    AI-Barrage-Companion-项目策划书.md
-    AI-Barrage-Companion-项目拆分与实施规划.md
+  planning/
+    project-plan.md
+    implementation-roadmap.md
+    step-01-scaffold-and-interfaces.md
 
   requirements.txt
   main.py
@@ -94,7 +95,7 @@ AI-Barrage-Companion/
 - `core/` 只处理业务逻辑，不依赖具体 UI 控件。
 - `ui/` 只处理窗口、控件、动画和用户操作。
 - `config/` 只处理配置默认值、读取和保存。
-- `规划/` 只存放策划、审查、规划、记录等非项目运行必需文档。
+- `planning/` 只存放策划、审查、规划、记录等非项目运行必需文档。
 
 ## 4. 核心数据结构与接口规范
 
