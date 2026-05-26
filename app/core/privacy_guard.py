@@ -1,35 +1,46 @@
-"""Privacy filtering before context reaches generation services."""
+"""Privacy filtering before scene context reaches any generator."""
 
 from __future__ import annotations
-
-from dataclasses import replace
 
 from app.models import AppSettings, PrivacyDecision, SceneSummary
 
 
+STRICT_BLOCKED_FIELDS = [
+    "screenshot",
+    "ocr_text",
+    "window_title",
+    "file_name",
+    "url",
+    "chat_text",
+]
+
+
 class BasicPrivacyGuard:
-    """Keep outbound context limited to coarse scene metadata."""
+    """Allow only the coarse SceneSummary fields used by MVP generation."""
 
     def sanitize(
         self,
         scene: SceneSummary,
         settings: AppSettings,
     ) -> PrivacyDecision:
-        blocked_fields = ["screenshot"]
+        blocked_fields: list[str] = ["screenshot"]
 
-        if not settings.enable_ocr:
-            blocked_fields.append("ocr_text")
-        if not settings.enable_window_title:
-            blocked_fields.append("window_title")
         if settings.privacy_mode == "strict":
-            blocked_fields.extend(["file_name", "url", "chat_text"])
-
-        sanitized_scene = replace(scene)
-        reason = "Only coarse scene summary is allowed."
+            blocked_fields = STRICT_BLOCKED_FIELDS.copy()
+        else:
+            if not settings.enable_ocr:
+                blocked_fields.append("ocr_text")
+            if not settings.enable_window_title:
+                blocked_fields.append("window_title")
 
         return PrivacyDecision(
             allowed=True,
-            sanitized_scene=sanitized_scene,
+            sanitized_scene=SceneSummary(
+                activity=scene.activity,
+                pace=scene.pace,
+                event=scene.event,
+                confidence=max(0.0, min(scene.confidence, 1.0)),
+            ),
             blocked_fields=blocked_fields,
-            reason=reason,
+            reason=None,
         )
