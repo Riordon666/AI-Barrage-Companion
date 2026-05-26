@@ -14,7 +14,7 @@ class BarrageLabel(QLabel):
 
     def __init__(self, text: str, parent: QWidget, font_size: int) -> None:
         super().__init__(text, parent)
-        self.setFont(QFont("Microsoft YaHei UI", font_size, QFont.Weight.Bold))
+        self.setFont(QFont("Microsoft YaHei", font_size, QFont.Weight.Bold))
         self.setStyleSheet("color: white; background: transparent;")
         self.adjustSize()
 
@@ -66,7 +66,7 @@ class PySideOverlayRenderer(QWidget):
         return int(self.height() * self._display_area_percent / 100)
 
     def track_height(self) -> int:
-        metrics = QFontMetrics(QFont("Microsoft YaHei UI", self._font_size, QFont.Weight.Bold))
+        metrics = QFontMetrics(QFont("Microsoft YaHei", self._font_size, QFont.Weight.Bold))
         return max(24, metrics.height() + 8)
 
     def set_click_through(self, enabled: bool) -> None:
