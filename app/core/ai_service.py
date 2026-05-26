@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import io
 import json
 import re
 import time
@@ -9,18 +11,64 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
+from PIL import Image
+
+import logging
 
 from app.constants import DEFAULT_BARRAGE_DURATION_SECONDS
 from app.config.provider_presets import provider_for_key
 from app.core.mock_barrage_service import DEFAULT_PERSONAS, MockBarrageService
-from app.models import ApiConfig, BarrageItem, GenerationRequest, GenerationResult, Persona, SceneEvent
+from app.models import ApiConfig, BarrageItem, CapturedFrame, GenerationRequest, GenerationResult, Persona, SceneEvent
+
+logger = logging.getLogger("abc.ai_service")
 
 
 VALID_PERSONAS = set(DEFAULT_PERSONAS)
 
 
+def encode_frame_jpeg_base64(frame: CapturedFrame, quality: int = 50) -> str:
+    """Convert a mss CapturedFrame to a base64 data-uri JPEG string."""
+    raw = _raw_bytes(frame.image)
+    bpp = max(1, len(raw) // max(1, frame.width * frame.height))
+    if bpp >= 3:
+        pil_image = Image.frombuffer("RGB", (frame.width, frame.height), raw, "raw", "BGRX")
+    else:
+        # Grayscale fallback
+        pil_image = Image.frombuffer("L", (frame.width, frame.height), raw, "raw", "L")
+
+    # Resize to reduce token cost (max 512 on the longest side)
+    scale = min(512 / frame.width, 512 / frame.height)
+    if scale < 1.0:
+        new_size = (int(frame.width * scale), int(frame.height * scale))
+        pil_image = pil_image.resize(new_size, Image.Resampling.LANCZOS)
+
+    buf = io.BytesIO()
+    pil_image.save(buf, format="JPEG", quality=quality)
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _raw_bytes(image: object) -> bytes:
+    if isinstance(image, bytes):
+        return image
+    if isinstance(image, bytearray):
+        return bytes(image)
+    raw = getattr(image, "raw", None)
+    if isinstance(raw, bytes):
+        return raw
+    bgra = getattr(image, "bgra", None)
+    if isinstance(bgra, bytes):
+        return bgra
+    rgb = getattr(image, "rgb", None)
+    if isinstance(rgb, bytes):
+        return rgb
+    return b""
+
+
 class OpenAICompatibleBarrageService:
     """Generate barrage items through an OpenAI-style chat completions API."""
+
+    # Per-session cache: (base_url, model) → vision support known to be broken
+    _vision_disabled: set[tuple[str, str]] = set()
 
     def __init__(
         self,
@@ -44,18 +92,42 @@ class OpenAICompatibleBarrageService:
             fallback.error = "missing_api_key"
             return fallback
 
+        # Skip vision if this model is known to reject images
+        vision_key = (self._api_config.base_url, self._api_config.model)
+        if request.image_base64 and vision_key in self._vision_disabled:
+            request.image_base64 = None
+
         try:
             content = self._request_content(request)
-            items = self.parse_items(content, request)
-            if not items:
+        except httpx.HTTPStatusError as http_exc:
+            if request.image_base64 and http_exc.response.status_code in (400, 404, 422):
+                self._vision_disabled.add(vision_key)
+                logger.info("视觉请求不被模型支持（已记住），回退纯文本重试")
+                request.image_base64 = None
+                try:
+                    content = self._request_content(request)
+                except Exception as exc:
+                    logger.warning("纯文本重试也失败: %s", exc)
+                    fallback = self._fallback.generate(request)
+                    fallback.error = "api_error_retry"
+                    return fallback
+            else:
+                logger.warning("API HTTP 错误: %s", http_exc)
                 fallback = self._fallback.generate(request)
-                fallback.error = "empty_ai_result"
+                fallback.error = "api_error"
                 return fallback
-            return GenerationResult(items=items, source="ai")
-        except Exception:
+        except Exception as exc:
+            logger.warning("API 请求异常: %s", exc)
             fallback = self._fallback.generate(request)
             fallback.error = "api_error"
             return fallback
+
+        items = self.parse_items(content, request)
+        if not items:
+            fallback = self._fallback.generate(request)
+            fallback.error = "empty_ai_result"
+            return fallback
+        return GenerationResult(items=items, source="ai")
 
     def parse_items(self, content: str, request: GenerationRequest) -> list[BarrageItem]:
         parsed = self._parse_json_array(content)
@@ -95,17 +167,32 @@ class OpenAICompatibleBarrageService:
     def _request_content(self, request: GenerationRequest) -> str:
         assert self._api_config is not None
         url = self._api_config.base_url.rstrip("/") + "/chat/completions"
-        payload = {
+
+        user_content: str | list[dict[str, Any]]
+        if request.image_base64:
+            # Vision API format: image + text
+            user_content = [
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{request.image_base64}",
+                        "detail": "low",
+                    },
+                },
+                {"type": "text", "text": self._user_prompt(request)},
+            ]
+        else:
+            user_content = self._user_prompt(request)
+
+        payload: dict[str, Any] = {
             "model": self._api_config.model,
             "messages": [
-                {"role": "system", "content": self._system_prompt()},
-                {"role": "user", "content": self._user_prompt(request)},
+                {"role": "system", "content": self._system_prompt(request)},
+                {"role": "user", "content": user_content},
             ],
             "temperature": 0.8,
         }
-        headers = {
-            "Content-Type": "application/json",
-        }
+        headers = {"Content-Type": "application/json"}
         if self._api_config.api_key:
             headers["Authorization"] = f"Bearer {self._api_config.api_key}"
         client = self._client or httpx.Client(timeout=self._api_config.timeout_seconds)
@@ -115,22 +202,25 @@ class OpenAICompatibleBarrageService:
         return str(data["choices"][0]["message"]["content"])
 
     @staticmethod
-    def _system_prompt() -> str:
-        return (
+    def _system_prompt(request: GenerationRequest) -> str:
+        base = (
             "你是直播间观众，只输出 JSON 数组。"
             "每条弹幕 1 到 12 个中文字符，不要脏话、人身攻击或隐私内容。"
         )
+        if request.image_base64:
+            base += "你可以看到用户屏幕截图，请根据画面内容生成贴合场景的弹幕。"
+        return base
 
     @staticmethod
     def _user_prompt(request: GenerationRequest) -> str:
         scene = request.scene
-        return (
-            f"场景: activity={scene.activity}, pace={scene.pace}, event={scene.event}, "
-            f"confidence={scene.confidence:.2f}\n"
-            f"人格可选: {', '.join(request.personas or DEFAULT_PERSONAS)}\n"
-            f"数量: {request.count}\n"
-            '格式: [{"persona":"fun","text":"有点意思"}]'
-        )
+        lines = [
+            f"场景: activity={scene.activity}, pace={scene.pace}, event={scene.event}, confidence={scene.confidence:.2f}",
+            f"人格可选: {', '.join(request.personas or DEFAULT_PERSONAS)}",
+            f"数量: {request.count}",
+            '格式: [{"persona":"fun","text":"有点意思"}]',
+        ]
+        return "\n".join(lines)
 
     @staticmethod
     def _parse_json_array(content: str) -> Any:

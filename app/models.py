@@ -37,6 +37,7 @@ class AppSettings:
     privacy_mode: PrivacyMode = "strict"
     enable_ocr: bool = False
     enable_window_title: bool = False
+    enable_vision: bool = False
     display_area_percent: int = 65
     barrage_font_size: int = 18
 
@@ -97,6 +98,7 @@ class GenerationRequest:
     density: Density
     personas: list[Persona]
     count: int
+    image_base64: str | None = None
 
 
 @dataclass

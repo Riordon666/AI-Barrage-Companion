@@ -110,6 +110,9 @@ class ControlPanel(QWidget):
 
         self._mock_when_missing = QCheckBox("无 API Key 时使用模拟弹幕")
 
+        self._enable_vision = QCheckBox("发送截图给 AI（视觉模式）")
+        self._enable_vision.setToolTip("截图将作为 JPEG 发送给 AI 模型以获得更精准的弹幕，请确认你信任该 AI 提供商")
+
         self._test_connection_button = QPushButton("测试连接")
         self._test_connection_button.setProperty("class", "secondary")
         self._test_connection_button.clicked.connect(self._test_connection)
@@ -192,6 +195,7 @@ class ControlPanel(QWidget):
         form = QFormLayout()
         form.addRow("弹幕密度", self._density)
         form.addRow("", self._mock_when_missing)
+        form.addRow("", self._enable_vision)
         group.setLayout(form)
         return group
 
@@ -304,6 +308,7 @@ class ControlPanel(QWidget):
         self._settings.density = self._density.currentText()  # type: ignore[assignment]
         self._settings.api = api
         self._settings.use_mock_when_api_missing = self._mock_when_missing.isChecked()
+        self._settings.enable_vision = self._enable_vision.isChecked()
         self._settings.display_area_percent = self._display_area.value()
         self._settings.barrage_font_size = self._font_size.value()
         self.settingsSaved.emit(self._settings)
@@ -353,6 +358,7 @@ class ControlPanel(QWidget):
         self._display_area.setValue(settings.display_area_percent)
         self._font_size.setValue(settings.barrage_font_size)
         self._mock_when_missing.setChecked(settings.use_mock_when_api_missing)
+        self._enable_vision.setChecked(settings.enable_vision)
 
         provider_key = settings.api.provider if settings.api else "custom"
         if provider_key in self._provider_keys:

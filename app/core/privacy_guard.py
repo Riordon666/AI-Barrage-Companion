@@ -33,6 +33,10 @@ class BasicPrivacyGuard:
             if not settings.enable_window_title:
                 blocked_fields.append("window_title")
 
+        # Vision mode: user explicitly consented to uploading screenshots
+        if settings.enable_vision:
+            blocked_fields = [f for f in blocked_fields if f != "screenshot"]
+
         return PrivacyDecision(
             allowed=True,
             sanitized_scene=SceneSummary(

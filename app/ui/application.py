@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 import sys
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -13,11 +14,14 @@ from app.config.settings_store import SettingsStore
 from app.constants import (
     DEFAULT_AI_BARRAGE_COUNT,
     DEFAULT_BARRAGE_BUFFER_LIMIT,
-    DEFAULT_BARRAGE_SEND_INTERVAL_MS,
+    DEFAULT_BARRAGE_DURATION_SECONDS,
     DEFAULT_RENDER_TICK_MS,
     DEFAULT_TRACK_GAP,
+    DENSITY_HIGHLIGHT_INTERVAL,
+    DENSITY_SEND_INTERVAL,
+    PERSONA_SPEED,
 )
-from app.core.ai_service import OpenAICompatibleBarrageService
+from app.core.ai_service import OpenAICompatibleBarrageService, encode_frame_jpeg_base64
 from app.core.barrage_cache import InMemoryBarrageCache
 from app.core.barrage_manager import BasicBarrageManager
 from app.core.capture_scheduler import BasicCaptureScheduler
@@ -75,13 +79,18 @@ class RuntimeController(QObject):
             confidence=0.0,
         )
         self._paused = False
+        self._ai_failures = 0  # consecutive AI generation failures
 
         self._capture_timer = QTimer(self)
         self._capture_timer.timeout.connect(self._capture_and_generate)
         self._render_timer = QTimer(self)
         self._render_timer.timeout.connect(self._render_tick)
         self._send_timer = QTimer(self)
+        self._send_timer.setSingleShot(True)
         self._send_timer.timeout.connect(self._send_next_barrage)
+        # Buffer fill timer: always runs to keep barrages flowing continuously.
+        self._fill_timer = QTimer(self)
+        self._fill_timer.timeout.connect(self._fill_buffer_tick)
 
         panel.pauseChanged.connect(self.set_paused)
         panel.densityChanged.connect(self.set_density)
@@ -94,7 +103,8 @@ class RuntimeController(QObject):
         self._overlay.show()
         self._panel.show()
         self._render_timer.start(DEFAULT_RENDER_TICK_MS)
-        self._send_timer.start(DEFAULT_BARRAGE_SEND_INTERVAL_MS)
+        self._schedule_next_send()
+        self._fill_timer.start(random.randint(400, 900))
         self._capture_and_generate()
         self._restart_capture_timer()
         source = "模拟弹幕" if isinstance(self._generator, MockBarrageService) else "AI"
@@ -110,10 +120,12 @@ class RuntimeController(QObject):
             self._manager.pause()
             self._capture_timer.stop()
             self._send_timer.stop()
+            self._fill_timer.stop()
             logger.info("已暂停 | 活跃弹幕=%d", self._manager.active_count)
         else:
             self._manager.resume()
-            self._send_timer.start(DEFAULT_BARRAGE_SEND_INTERVAL_MS)
+            self._schedule_next_send()
+            self._fill_timer.start(random.randint(400, 900))
             self._restart_capture_timer()
             logger.info("已恢复运行")
 
@@ -138,7 +150,9 @@ class RuntimeController(QObject):
         self._overlay.set_display_options(settings.display_area_percent, settings.barrage_font_size)
         self._manager.set_track_layout(self._overlay.track_height(), DEFAULT_TRACK_GAP)
         self._generator = self._build_generator()
+        self._ai_failures = 0  # reset on settings change
         self._restart_capture_timer()
+        self._fill_timer.start(random.randint(400, 900))
         source = "模拟弹幕" if isinstance(self._generator, MockBarrageService) else "AI"
         logger.info("配置已更新 | 弹幕来源=%s | 密度=%s", source, settings.density)
 
@@ -146,8 +160,11 @@ class RuntimeController(QObject):
         if self._paused or self._generation_future is not None:
             return
 
+        encoded_frame: str | None = None
         try:
             frame = self._capture.capture()
+            if self._settings.enable_vision and not isinstance(self._generator, MockBarrageService):
+                encoded_frame = encode_frame_jpeg_base64(frame)
             self._last_stats, scene = self._analyzer.analyze(frame)
             decision = self._privacy_guard.sanitize(scene, self._settings)
             if not decision.allowed:
@@ -180,6 +197,7 @@ class RuntimeController(QObject):
             density=self._settings.density,
             personas=DEFAULT_PERSONAS,
             count=DEFAULT_AI_BARRAGE_COUNT,
+            image_base64=encoded_frame,
         )
         self._generation_future = self._executor.submit(self._generate_items, request)
         self._restart_capture_timer()
@@ -188,7 +206,13 @@ class RuntimeController(QObject):
         result = self._generator.generate(request)
         if result.error:
             logger.warning("弹幕生成降级: %s", result.error)
+            self._ai_failures += 1
+            if self._ai_failures >= 3 and not isinstance(self._generator, MockBarrageService):
+                logger.warning("AI 连续 %d 次失败，自动切换为模拟模式", self._ai_failures)
+                self._generator = self._mock_generator
+                self._panel.set_status("AI 请求连续失败，已切换模拟模式", "error")
         else:
+            self._ai_failures = 0
             logger.info("弹幕生成成功 | source=%s | count=%d", result.source, len(result.items))
         if result.items:
             self._cache.put(request.scene, result.items)
@@ -214,11 +238,58 @@ class RuntimeController(QObject):
         if assignments:
             self._overlay.render(assignments)
 
+    def _send_interval_range(self) -> tuple[int, int]:
+        """Return (min_ms, max_ms) based on density and highlight state."""
+        is_highlight = self._last_scene.event == "highlight"
+        table = DENSITY_HIGHLIGHT_INTERVAL if is_highlight else DENSITY_SEND_INTERVAL
+        density = str(self._settings.density)
+        return table.get(density, (400, 2000))  # type: ignore[return-value]
+
+    def _schedule_next_send(self) -> None:
+        if not self._paused:
+            min_ms, max_ms = self._send_interval_range()
+            delay = random.randint(min_ms, max_ms)
+            self._send_timer.start(delay)
+
     def _send_next_barrage(self) -> None:
-        if self._paused or not self._barrage_buffer:
+        if not self._paused and self._barrage_buffer:
+            item = self._barrage_buffer.pop(0)
+            self._apply_persona_speed(item)
+            self._manager.enqueue([item])
+
+        self._manager.set_burst(self._last_scene.event == "highlight")
+        self._schedule_next_send()
+
+    def _fill_buffer_tick(self) -> None:
+        """Always runs — keeps the send buffer topped up via mock generation.
+        AI-generated barrages (from the capture cycle) supplement this,
+        but the mock fill ensures continuous flow regardless of API status."""
+        if self._paused:
             return
-        item = self._barrage_buffer.pop(0)
-        self._manager.enqueue([item])
+        if len(self._barrage_buffer) >= 6:
+            self._fill_timer.start(random.randint(400, 1000))
+            return
+
+        count = random.randint(1, 3)
+        personas = random.sample(DEFAULT_PERSONAS, k=min(count, len(DEFAULT_PERSONAS)))
+        request = GenerationRequest(
+            scene=self._last_scene,
+            density=self._settings.density,
+            personas=personas,
+            count=len(personas),
+        )
+        result = self._mock_generator.generate(request)
+        if result.items:
+            self._buffer_items(result.items)
+
+        self._fill_timer.start(random.randint(400, 900))
+
+    @staticmethod
+    def _apply_persona_speed(item: BarrageItem) -> None:
+        base = DEFAULT_BARRAGE_DURATION_SECONDS
+        factor = PERSONA_SPEED.get(str(item.persona), 1.0)
+        jitter = random.uniform(0.85, 1.15)
+        item.duration_seconds = base * factor * jitter
 
     def _buffer_items(self, items: list[BarrageItem]) -> None:
         capacity = max(0, DEFAULT_BARRAGE_BUFFER_LIMIT - len(self._barrage_buffer))

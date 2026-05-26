@@ -85,6 +85,7 @@ class SettingsStore:
             privacy_mode=privacy_mode,  # type: ignore[arg-type]
             enable_ocr=bool(raw.get("enable_ocr", False)),
             enable_window_title=bool(raw.get("enable_window_title", False)),
+            enable_vision=bool(raw.get("enable_vision", False)),
             display_area_percent=self._clamp_int(
                 raw.get("display_area_percent", DEFAULT_DISPLAY_AREA_PERCENT),
                 0,
