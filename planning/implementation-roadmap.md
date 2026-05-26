@@ -2,12 +2,12 @@
 
 ## 1. 现状与目标
 
-当前项目已完成第一步工程骨架。仓库中已有 `app/`、`tests/`、`requirements.txt`、核心数据模型、接口协议和根目录入口 `main.py`。问题原因是项目刚从示例脚本阶段进入正式工程阶段，目前只完成了结构和接口边界，还没有实现截屏、AI 调用、弹幕调度或 PySide6 窗口。
+当前项目已完成除打包发布外的 MVP 运行时。仓库中已有 `app/`、`tests/`、`requirements.txt`、核心数据模型、接口协议、配置读写、截屏入口、帧差分析、隐私过滤、模拟弹幕、AI 生成降级、弹幕缓存、发送缓冲、弹幕调度、PySide6 透明覆盖层、控制面板、托盘入口和根目录入口 `main.py`。控制面板已支持提供商/模型联动、显示区域和字体大小设置。
 
 当前已验证：
 
-- `python main.py` 可以运行。
-- `python -m compileall app tests` 可以通过。
+- `.\.venv\Scripts\python.exe -m pytest` 可以通过。
+- `.\.venv\Scripts\python.exe -m compileall app tests` 可以通过。
 - 文档类文件统一放在 `planning/`。
 - Python 缓存文件已加入 `.gitignore`。
 
@@ -354,6 +354,8 @@ class OverlayRenderer:
 
 ### 阶段 1：模型与配置
 
+状态：已完成基础实现，详见 `planning/step-04-runtime-mvp-with-ui.md`。
+
 需要完成：
 
 - 实现 `models.py` 中的数据结构。
@@ -368,6 +370,8 @@ class OverlayRenderer:
 - API Key 不出现在日志或异常输出中。
 
 ### 阶段 2：截屏与本地分析
+
+状态：已完成基础实现，详见 `planning/step-04-runtime-mvp-with-ui.md`。
 
 需要完成：
 
@@ -384,6 +388,8 @@ class OverlayRenderer:
 - 分析模块有单元测试覆盖阈值逻辑。
 
 ### 阶段 3：弹幕生成服务
+
+状态：已完成模拟生成、隐私过滤、AI 服务、缓存和降级基础实现；提供商/模型联动详见 `planning/step-05-provider-buffer-display-controls.md`。
 
 需要完成：
 
@@ -402,6 +408,8 @@ class OverlayRenderer:
 
 ### 阶段 4：弹幕调度器
 
+状态：已完成，详见 `planning/step-03-barrage-manager.md`。
+
 需要完成：
 
 - 实现弹幕队列。
@@ -416,6 +424,8 @@ class OverlayRenderer:
 - 暂停后不新增运动弹幕，继续后恢复。
 
 ### 阶段 5：透明弹幕窗口
+
+状态：已完成基础实现，并支持显示区域和字体大小设置，详见 `planning/step-05-provider-buffer-display-controls.md`。
 
 需要完成：
 
@@ -432,6 +442,8 @@ class OverlayRenderer:
 
 ### 阶段 6：控制面板与托盘
 
+状态：已完成基础实现，并升级为分组式控制面板，详见 `planning/step-05-provider-buffer-display-controls.md`。
+
 需要完成：
 
 - 提供暂停/继续按钮。
@@ -447,6 +459,8 @@ class OverlayRenderer:
 - 退出后没有残留进程。
 
 ### 阶段 7：主流程整合
+
+状态：已完成基础实现，AI 采样生成和弹幕发送节奏已分离，详见 `planning/step-05-provider-buffer-display-controls.md`。
 
 需要完成：
 

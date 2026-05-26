@@ -2,4 +2,5 @@
 /.idea/
 __pycache__/
 *.py[cod]
+abc-settings.json
 *.egg-info/

@@ -37,6 +37,8 @@ class AppSettings:
     privacy_mode: PrivacyMode = "strict"
     enable_ocr: bool = False
     enable_window_title: bool = False
+    display_area_percent: int = 65
+    barrage_font_size: int = 18
 
 
 @dataclass

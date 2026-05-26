@@ -102,6 +102,11 @@ class BasicBarrageManager:
             raise ValueError(f"Unsupported density: {density}")
         self._density = density  # type: ignore[assignment]
 
+    def set_track_layout(self, track_height: int, track_gap: int | None = None) -> None:
+        self._track_height = max(1, track_height)
+        if track_gap is not None:
+            self._track_gap = max(0, track_gap)
+
     def pause(self) -> None:
         self._paused = True
 
