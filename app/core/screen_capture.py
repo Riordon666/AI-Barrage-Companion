@@ -17,7 +17,8 @@ class MssScreenCapture:
         self._monitor_index = monitor_index
 
     def capture(self) -> CapturedFrame:
-        with mss.mss() as sct:
+        capture_factory = getattr(mss, "MSS", mss.mss)
+        with capture_factory() as sct:
             monitor = sct.monitors[min(self._monitor_index, len(sct.monitors) - 1)]
             shot = sct.grab(monitor)
 

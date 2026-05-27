@@ -2,13 +2,37 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import random
 import time
+from pathlib import Path
 from uuid import uuid4
 
 from app.constants import DEFAULT_BARRAGE_DURATION_SECONDS
 from app.core.utils import priority_for_event
 from app.models import BarrageItem, GenerationRequest, GenerationResult, Persona, SceneEvent
+
+logger = logging.getLogger("abc.mock")
+
+_POOL_PATH = Path(__file__).resolve().parent.parent / "data" / "danmu_pool.json"
+_GENERIC_POOL: list[str] = []
+
+
+def _load_generic_pool() -> list[str]:
+    """Load the DanmuAI barrage pool from disk (once)."""
+    global _GENERIC_POOL
+    if _GENERIC_POOL:
+        return _GENERIC_POOL
+    try:
+        data = json.loads(_POOL_PATH.read_text(encoding="utf-8"))
+        items = data.get("items", []) if isinstance(data, dict) else data
+        _GENERIC_POOL = [str(t) for t in items if isinstance(t, str) and len(t) <= 12]
+        logger.info("通用弹幕池已加载: %d 条", len(_GENERIC_POOL))
+    except Exception as exc:
+        logger.warning("通用弹幕池加载失败: %s", exc)
+        _GENERIC_POOL = []
+    return _GENERIC_POOL
 
 
 DEFAULT_PERSONAS: list[Persona] = [
@@ -56,6 +80,7 @@ class MockBarrageService:
 
     def __init__(self, rng: random.Random | None = None) -> None:
         self._rng = rng or random.Random()
+        _load_generic_pool()
 
     def generate(self, request: GenerationRequest) -> GenerationResult:
         personas = request.personas or DEFAULT_PERSONAS
@@ -91,8 +116,14 @@ class MockBarrageService:
         persona: Persona,
         used_texts: set[str],
     ) -> str | None:
+        # Try persona-specific templates first
         candidates = event_templates.get(persona) or TEMPLATES["normal"][persona]
         available = [text for text in candidates if text not in used_texts]
-        if not available:
-            return None
-        return self._rng.choice(available)
+        if available:
+            return self._rng.choice(available)
+        # Fall back to generic pool
+        if _GENERIC_POOL:
+            pool_available = [t for t in _GENERIC_POOL if t not in used_texts]
+            if pool_available:
+                return self._rng.choice(pool_available)
+        return None

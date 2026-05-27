@@ -23,8 +23,9 @@ class ApiConfig:
     base_url: str
     api_key: str
     model: str
-    timeout_seconds: float = 20.0
+    timeout_seconds: float = 60.0
     max_retries: int = 1
+    protocol: str = "openai"  # "openai" | "anthropic"
 
     def __repr__(self) -> str:
         masked = self._mask_key(self.api_key)

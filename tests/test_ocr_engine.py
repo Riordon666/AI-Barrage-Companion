@@ -7,6 +7,7 @@ from app.core.ocr_engine import (
     _clean_ocr_text,
     _hash_text,
     extract_screen_text,
+    extract_screen_text_with_status,
 )
 from app.models import CapturedFrame
 
@@ -93,3 +94,18 @@ class TestGracefulFallback:
         # If Tesseract is installed this may return actual text;
         # if not, it must return '' (no crash).
         assert isinstance(result, str)
+
+    def test_extract_screen_text_with_status_returns_diagnostics(self) -> None:
+        frame = CapturedFrame(
+            width=8,
+            height=8,
+            timestamp=0.0,
+            image=b"\x00" * 8 * 8 * 4,
+        )
+
+        result = extract_screen_text_with_status(frame)
+
+        assert isinstance(result.text, str)
+        assert result.engine
+        assert result.status
+        assert result.message

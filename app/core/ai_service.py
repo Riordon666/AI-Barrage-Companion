@@ -91,30 +91,46 @@ class OpenAICompatibleBarrageService:
         if request.image_base64 and vision_key in self._vision_disabled:
             request.image_base64 = None
 
-        try:
-            content = self._request_content(request)
-        except httpx.HTTPStatusError as http_exc:
-            if request.image_base64 and http_exc.response.status_code in (400, 404, 422):
-                self._vision_disabled.add(vision_key)
-                logger.info("视觉请求不被模型支持（已记住），回退纯文本重试")
-                request.image_base64 = None
-                try:
-                    content = self._request_content(request)
-                except Exception as exc:
-                    logger.warning("纯文本重试也失败: %s", exc)
+        max_attempts = 1 + max(0, self._api_config.max_retries)
+        last_exc: Exception | None = None
+
+        for attempt in range(max_attempts):
+            try:
+                content = self._request_content(request)
+                last_exc = None
+                break
+            except httpx.HTTPStatusError as http_exc:
+                if request.image_base64 and http_exc.response.status_code in (400, 404, 422):
+                    self._vision_disabled.add(vision_key)
+                    logger.info("视觉请求不被模型支持（已记住），回退纯文本重试")
+                    request.image_base64 = None
+                    try:
+                        content = self._request_content(request)
+                        last_exc = None
+                        break
+                    except Exception as exc:
+                        logger.warning("纯文本重试也失败: %s", exc)
+                        fallback = self._fallback.generate(request)
+                        fallback.error = "api_error_retry"
+                        return fallback
+                else:
+                    logger.warning("API HTTP 错误 (attempt %d/%d): %s", attempt + 1, max_attempts, http_exc)
+                    last_exc = http_exc
+                    if attempt < max_attempts - 1:
+                        time.sleep(1.5 * (attempt + 1))
+                        continue
                     fallback = self._fallback.generate(request)
-                    fallback.error = "api_error_retry"
+                    fallback.error = "api_error"
                     return fallback
-            else:
-                logger.warning("API HTTP 错误: %s", http_exc)
+            except (httpx.RequestError, json.JSONDecodeError, KeyError, IndexError) as exc:
+                logger.warning("API 请求异常 (attempt %d/%d): %s", attempt + 1, max_attempts, exc)
+                last_exc = exc
+                if attempt < max_attempts - 1:
+                    time.sleep(1.5 * (attempt + 1))
+                    continue
                 fallback = self._fallback.generate(request)
                 fallback.error = "api_error"
                 return fallback
-        except (httpx.RequestError, json.JSONDecodeError, KeyError, IndexError) as exc:
-            logger.warning("API 请求异常: %s", exc)
-            fallback = self._fallback.generate(request)
-            fallback.error = "api_error"
-            return fallback
 
         items = self.parse_items(content, request)
         if not items:
@@ -160,11 +176,20 @@ class OpenAICompatibleBarrageService:
 
     def _request_content(self, request: GenerationRequest) -> str:
         assert self._api_config is not None
+        is_anthropic = self._api_config.protocol == "anthropic"
+
+        if is_anthropic:
+            return self._request_anthropic(request)
+        return self._request_openai(request)
+
+    # ── OpenAI protocol ─────────────────────────────────────────────────
+
+    def _request_openai(self, request: GenerationRequest) -> str:
+        assert self._api_config is not None
         url = self._api_config.base_url.rstrip("/") + "/chat/completions"
 
         user_content: str | list[dict[str, Any]]
         if request.image_base64:
-            # Vision API format: image + text
             user_content = [
                 {
                     "type": "image_url",
@@ -190,18 +215,10 @@ class OpenAICompatibleBarrageService:
         if self._api_config.api_key:
             headers["Authorization"] = f"Bearer {self._api_config.api_key}"
 
-        # Extract text part of user_content for logging (may be str or vision list)
         user_text = user_content if isinstance(user_content, str) else (
             next((b["text"] for b in user_content if isinstance(b, dict) and b.get("type") == "text"), "")
         )
-        try:
-            logger.info(
-                "[HTTP 请求] %s | model=%s | prompt_len=%d | image=%s",
-                url, self._api_config.model, len(user_text),
-                "YES" if request.image_base64 else "NO",
-            )
-        except Exception:
-            pass  # graceful with mock/test clients
+        self._log_request(url, len(user_text), bool(request.image_base64))
 
         def _do_post(client: httpx.Client) -> str:
             response = client.post(url, headers=headers, json=payload)
@@ -209,19 +226,95 @@ class OpenAICompatibleBarrageService:
             data = response.json()
             content = str(data["choices"][0]["message"]["content"])
             try:
-                logger.info(
-                    "[HTTP 响应] status=%d | content_len=%d | preview=%.120s",
-                    response.status_code, len(content), content,
-                )
+                self._log_response(response.status_code, content)
             except Exception:
                 pass  # mock client may not expose status_code
             return content
 
-        if self._client is not None:
-            return _do_post(self._client)
+        return self._exec_request(_do_post)
 
-        with httpx.Client(timeout=self._api_config.timeout_seconds) as client:
-            return _do_post(client)
+    # ── Anthropic protocol ──────────────────────────────────────────────
+
+    def _request_anthropic(self, request: GenerationRequest) -> str:
+        assert self._api_config is not None
+        base = self._api_config.base_url.rstrip("/")
+        # Standard Anthropic: base_url = https://api.anthropic.com → /v1/messages
+        # MiMo-style:        base_url = .../anthropic           → /messages
+        if base.endswith("/v1") or "/anthropic" in base:
+            url = base + "/messages"
+        else:
+            url = base + "/v1/messages"
+
+        user_blocks: list[dict[str, Any]] = []
+        if request.image_base64:
+            user_blocks.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/jpeg",
+                    "data": request.image_base64,
+                },
+            })
+        user_blocks.append({"type": "text", "text": self._user_prompt(request)})
+
+        payload: dict[str, Any] = {
+            "model": self._api_config.model,
+            "max_tokens": 256,
+            "system": self._system_prompt(request),
+            "messages": [{"role": "user", "content": user_blocks}],
+            "temperature": 0.8,
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "x-api-key": self._api_config.api_key,
+            "anthropic-version": "2023-06-01",
+        }
+
+        user_text = next((b["text"] for b in user_blocks if b.get("type") == "text"), "")
+        self._log_request(url, len(user_text), bool(request.image_base64))
+
+        def _do_post(client: httpx.Client) -> str:
+            response = client.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            data = response.json()
+            content = str(data["content"][0]["text"])
+            try:
+                self._log_response(response.status_code, content)
+            except Exception:
+                pass  # mock client may not expose status_code
+            return content
+
+        return self._exec_request(_do_post)
+
+    # ── Shared helpers ───────────────────────────────────────────────────
+
+    def _exec_request(self, do_post) -> str:
+        if self._client is not None:
+            return do_post(self._client)
+        read_timeout = max(30.0, self._api_config.timeout_seconds)
+        timeout = httpx.Timeout(connect=10.0, read=read_timeout, write=10.0, pool=10.0)
+        with httpx.Client(timeout=timeout) as client:
+            return do_post(client)
+
+    def _log_request(self, url: str, prompt_len: int, has_image: bool) -> None:
+        try:
+            logger.info(
+                "[HTTP 请求] %s | model=%s | prompt_len=%d | image=%s",
+                url, self._api_config.model, prompt_len,
+                "YES" if has_image else "NO",
+            )
+        except Exception:
+            pass
+
+    @staticmethod
+    def _log_response(status_code: int, content: str) -> None:
+        try:
+            logger.info(
+                "[HTTP 响应] status=%d | content_len=%d | preview=%.120s",
+                status_code, len(content), content,
+            )
+        except Exception:
+            pass  # graceful with mock/test clients
 
     @staticmethod
     def _system_prompt(request: GenerationRequest) -> str:

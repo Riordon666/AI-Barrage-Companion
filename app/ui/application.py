@@ -28,7 +28,7 @@ from app.core.capture_scheduler import BasicCaptureScheduler
 from app.core.frame_analyzer import BasicFrameAnalyzer
 from app.core.logger import get_logger, setup_logging
 from app.core.mock_barrage_service import DEFAULT_PERSONAS, MockBarrageService
-from app.core.ocr_engine import OcrCache, extract_screen_text
+from app.core.ocr_engine import OcrCache, extract_screen_text_with_status
 from app.core.privacy_guard import BasicPrivacyGuard
 from app.core.screen_capture import MssScreenCapture
 from app.core.screen_context import capture_screen_context
@@ -64,6 +64,7 @@ class RuntimeController(QObject):
         self._settings_store = settings_store
         self._overlay = overlay
         self._panel = panel
+        self._uses_default_capture = capture is None
         self._capture = capture or MssScreenCapture()
         self._analyzer = analyzer or BasicFrameAnalyzer()
         self._capture_scheduler = capture_scheduler or BasicCaptureScheduler()
@@ -109,6 +110,7 @@ class RuntimeController(QObject):
         self._last_ocr_text: str = ""
         self._last_api_request: str = ""
         self._last_api_response: str = ""
+        self._ocr_future: Future | None = None  # async OCR task
 
         self._capture_timer = QTimer(self)
         self._capture_timer.timeout.connect(self._capture_and_generate)
@@ -153,17 +155,20 @@ class RuntimeController(QObject):
         if self._settings.enable_ocr:
             try:
                 frame = self._capture.capture()
-                result = extract_screen_text(frame)
-                if result:
-                    self._panel.append_ocr_log(f"OCR 自检通过: 识别到 {len(result)} 字符")
+                result = extract_screen_text_with_status(frame)
+                if result.text:
+                    self._panel.append_ocr_log(
+                        f"OCR 自检通过: {result.engine} 识别到 {len(result.text)} 字符"
+                    )
                 else:
                     self._panel.append_ocr_log(
-                        "OCR 自检: 当前屏幕未识别到文字"
+                        f"OCR 自检: {result.message}"
                     )
             except Exception:
                 pass  # self-test is non-critical
 
     def shutdown(self) -> None:
+        self._ocr_future = None
         self._executor.shutdown(wait=False, cancel_futures=True)
         logger.info("应用关闭")
 
@@ -245,24 +250,30 @@ class RuntimeController(QObject):
 
         try:
             frame = self._capture.capture()
+        except Exception as exc:
+            if not self._uses_default_capture:
+                logger.warning("截屏异常，使用安全默认场景: %s", exc)
+                self._last_scene = SceneSummary(
+                    activity="unknown",
+                    pace="normal",
+                    event="normal",
+                    confidence=0.0,
+                    screen_context="",
+                )
+                self._restart_capture_timer()
+                return
+            logger.warning("截屏异常，使用空帧继续流程: %s", exc)
+            frame = self._blank_frame()
 
-            # --- OCR: extract readable text from the screenshot ---
-            ocr_text = ""
+        try:
+            # --- OCR: submit to background thread to avoid blocking UI ---
+            ocr_text = self._last_ocr_text  # use previous result for this cycle
             if self._settings.enable_ocr and not isinstance(self._generator, MockBarrageService):
-                raw_text = extract_screen_text(frame)
-                if raw_text and self._ocr_cache.should_send(raw_text):
-                    ocr_text = raw_text
-                    self._last_ocr_text = ocr_text
-                    self._panel.append_ocr_log(
-                        f"识别到 {len(ocr_text)} 字符，已发送:\n{ocr_text}"
+                if self._ocr_future is None or self._ocr_future.done():
+                    self._ocr_future = self._executor.submit(
+                        extract_screen_text_with_status, frame
                     )
-                    logger.info("OCR 识别 %d 字符: %.80s", len(ocr_text), ocr_text)
-                elif raw_text:
-                    self._panel.append_ocr_log(
-                        f"识别到 {len(raw_text)} 字符，重复内容已抑制:\n{raw_text[:120]}"
-                    )
-                else:
-                    self._panel.append_ocr_log("OCR 扫描完成，未识别到文字")
+                # else: previous OCR still running, skip this cycle
             # -----------------------------------------------------
 
             # --- Window title context ---
@@ -297,7 +308,7 @@ class RuntimeController(QObject):
                 self._last_scene.event, self._last_scene.confidence,
                 self._last_scene.screen_context[:80] if self._last_scene.screen_context else "(无)",
             )
-        except (OSError, RuntimeError) as exc:
+        except Exception as exc:
             logger.warning("截屏/分析异常: %s", exc)
             self._last_scene = SceneSummary(
                 activity="unknown",
@@ -310,6 +321,7 @@ class RuntimeController(QObject):
         cached = self._cache.get(self._last_scene, DEFAULT_AI_BARRAGE_COUNT)
         if len(cached) >= DEFAULT_AI_BARRAGE_COUNT and self._last_scene.event == "normal":
             self._buffer_items(cached)
+            self._stats["barrages_cache"] += len(cached)
             self._restart_capture_timer()
             logger.debug("使用缓存弹幕 | scene=%s/%s/%s", self._last_scene.activity, self._last_scene.pace, self._last_scene.event)
             return
@@ -381,6 +393,27 @@ class RuntimeController(QObject):
         if self._overlay.barrage_region_height() <= 0:
             return
 
+        # --- Check async OCR result ---
+        if self._ocr_future is not None and self._ocr_future.done():
+            try:
+                ocr_result = self._ocr_future.result()
+                raw_text = ocr_result.text
+                if raw_text and self._ocr_cache.should_send(raw_text):
+                    self._last_ocr_text = raw_text
+                    self._panel.append_ocr_log(
+                        f"{ocr_result.engine} 识别到 {len(raw_text)} 字符，已发送:\n{raw_text}"
+                    )
+                    logger.info("OCR 识别 %d 字符: %.80s", len(raw_text), raw_text)
+                elif raw_text:
+                    self._panel.append_ocr_log(
+                        f"识别到 {len(raw_text)} 字符，重复内容已抑制:\n{raw_text[:120]}"
+                    )
+                else:
+                    self._panel.append_ocr_log(f"OCR 扫描完成：{ocr_result.message}")
+            except Exception as exc:
+                logger.warning("OCR 后台任务异常: %s", exc)
+            self._ocr_future = None
+
         if self._generation_future is not None and self._generation_future.done():
             try:
                 items = self._generation_future.result()
@@ -444,6 +477,7 @@ class RuntimeController(QObject):
         result = self._mock_generator.generate(request)
         if result.items:
             self._buffer_items(result.items)
+            self._stats["barrages_mock"] += len(result.items)
 
         self._fill_timer.start(random.randint(400, 900))
 
@@ -474,6 +508,19 @@ class RuntimeController(QObject):
         return OpenAICompatibleBarrageService(
             api_config=self._settings.api,
             fallback=self._mock_generator,
+        )
+
+    @staticmethod
+    def _blank_frame() -> CapturedFrame:
+        from app.models import CapturedFrame
+
+        width = 8
+        height = 8
+        return CapturedFrame(
+            width=width,
+            height=height,
+            timestamp=time.time(),
+            image=b"\x00" * width * height * 4,
         )
 
 

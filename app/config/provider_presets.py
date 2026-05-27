@@ -12,6 +12,7 @@ class ProviderPreset:
     base_url: str
     models: tuple[str, ...]
     requires_api_key: bool = True
+    protocol: str = "openai"  # "openai" | "anthropic"
 
 
 SUPPORTED_PROVIDERS: tuple[ProviderPreset, ...] = (
@@ -71,6 +72,13 @@ SUPPORTED_PROVIDERS: tuple[ProviderPreset, ...] = (
         base_url="http://localhost:11434/v1",
         models=("qwen2.5:7b", "llama3.1:8b", "gemma2:9b"),
         requires_api_key=False,
+    ),
+    ProviderPreset(
+        key="mimo",
+        label="小米 MiMo",
+        base_url="https://token-plan-cn.xiaomimimo.com/anthropic",
+        models=("mimo-v2.5-pro", "mimo-v2-flash"),
+        protocol="anthropic",
     ),
     ProviderPreset(
         key="custom",
