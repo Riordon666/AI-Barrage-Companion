@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from app.models import AppSettings, CapturePolicy, FrameStats
+from app.core.utils import as_capture_reason
+from app.models import AppSettings, CapturePolicy, CaptureReason, FrameStats
 
 
 class BasicCaptureScheduler:
@@ -36,5 +37,5 @@ class BasicCaptureScheduler:
             min_interval_seconds=min_interval,
             max_interval_seconds=max_interval,
             event_trigger_enabled=True,
-            reason=reason,  # type: ignore[arg-type]
+            reason=as_capture_reason(reason),
         )

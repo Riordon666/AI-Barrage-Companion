@@ -29,10 +29,12 @@
 
 - **屏幕截图** — 使用 `mss` 定时截取主屏，不上传、不保存
 - **画面变化分析** — 缩略图帧差检测，识别静止/正常/快速/重复场景
+- **屏幕文字识别（OCR）** — 可选启用 Tesseract OCR，提取屏幕文字作为 AI 上下文
+- **屏幕上下文感知** — 自动检测活动窗口标题和应用类型，告诉 AI 用户正在做什么
 - **隐私过滤** — 严格模式禁止截图、OCR、窗口标题、文件名、URL、聊天文本进入 AI 请求
 - **模拟弹幕** — 无 API Key 时生成本地弹幕，内置 5 类人格 × 4 种场景模板
-- **AI 弹幕** — 兼容 OpenAI 格式接口（DeepSeek、Qwen、智谱、SiliconFlow、Ollama 等）
-- **弹幕缓存** — 同类场景优先复用已生成的弹幕，减少 API 调用
+- **AI 弹幕** — 兼容 OpenAI 格式接口，可配合视觉模型根据截图内容生成弹幕
+- **弹幕缓存** — 按场景+屏幕上下文缓存弹幕，减少 API 调用
 - **弹幕调度** — 去重、密度限制（低/中/高）、轨道分配、优先级插队
 - **透明窗口** — PySide6 置顶透明层，弹幕从右向左平滑动画
 - **控制面板** — 暂停/继续、密度切换、显示区域调节、字体大小、API 配置
@@ -70,13 +72,13 @@ OpenAI、DeepSeek、阿里云百炼（Qwen）、Moonshot（Kimi）、智谱 GLM�
 git clone https://github.com/Riordon666/AI-Barrage-Companion.git
 cd AI-Barrage-Companion
 
-# 创建虚拟环境
+# 创建虚拟环境并安装依赖
 python -m venv .venv
 .venv\Scripts\activate
-
-# 安装依赖
 pip install -r requirements.txt
 ```
+
+> Python 3.9+ · OCR 使用 Windows 10/11 内置引擎，无需额外安装
 
 ### 运行
 
@@ -84,11 +86,7 @@ pip install -r requirements.txt
 python main.py
 ```
 
-启动后：
-1. 透明弹幕层覆盖在主屏幕上方
-2. 控制面板窗口弹出
-3. 默认使用**模拟弹幕**模式（无需 API Key）
-4. 弹幕会根据屏幕画面变化自动调整内容和频率
+启动后：透明弹幕层覆盖桌面 → 控制面板弹出 → 默认模拟弹幕（无需 API Key）。
 
 ### 配置 API Key
 
@@ -121,6 +119,10 @@ AI-Barrage-Companion/
       barrage_cache.py          # 弹幕缓存
       barrage_manager.py        # 弹幕调度
       capture_scheduler.py      # 截屏策略调度
+      screen_context.py         # 屏幕上下文（窗口标题 / 应用检测）
+      ocr_engine.py             # OCR 屏幕文字提取
+      logger.py                 # 日志系统
+      utils.py                  # 共享工具
 
     ui/
       overlay.py                # 透明弹幕窗口
@@ -142,6 +144,10 @@ AI-Barrage-Companion/
 ```text
 屏幕截图
     ↓
+屏幕上下文提取（窗口标题 / 应用检测）
+    ↓
+OCR 屏幕文字识别（可选）
+    ↓
 帧差异分析 → FrameStats + SceneSummary
     ↓
 隐私过滤 → 阻止敏感字段
@@ -149,6 +155,8 @@ AI-Barrage-Companion/
 弹幕缓存 → 命中则直接返回
     ↓
 AI 服务 / 模拟弹幕 → GenerationResult
+    ↓
+发送缓冲区（节奏分离）
     ↓
 弹幕调度 → 去重 + 密度 + 轨道分配
     ↓
@@ -167,9 +175,11 @@ AI 服务 / 模拟弹幕 → GenerationResult
 
 ## 隐私说明
 
-- 截图不上传、不保存，仅用于本地帧差分析
-- API 请求只发送粗粒度场景摘要（activity、pace、event、confidence）
-- 严格模式下禁止 OCR 文本、窗口标题、文件名、URL、聊天文本进入请求
+- 截图不上传、不保存，仅用于本地帧差分析和 OCR
+- 默认仅发送粗粒度场景摘要（activity、pace、event、confidence）
+- 用户主动启用「屏幕文字识别」后，OCR 提取的文字才会加入 AI 请求
+- 用户主动启用「窗口标题检测」后，窗口标题/应用类型才会加入 AI 请求
+- 严格模式禁止将截图、OCR 文本（非用户主动启用时）、窗口标题、文件名、URL、聊天文本发送给 AI
 - API Key 不写入日志
 - 用户可随时暂停，暂停时停止截屏和 AI 请求
 - 配置文件 `abc-settings.json` 保存在本地
@@ -182,7 +192,7 @@ AI 服务 / 模拟弹幕 → GenerationResult
 pytest -v
 ```
 
-测试覆盖：帧分析、弹幕调度、AI 服务、隐私过滤、弹幕缓存、截屏策略、配置读写。
+测试覆盖：帧分析、弹幕调度、AI 服务、隐私过滤、弹幕缓存、截屏策略、配置读写、OCR 引擎、屏幕上下文、RuntimeController 集成链路。（共 77 个测试）
 
 ---
 

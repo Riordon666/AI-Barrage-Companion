@@ -14,7 +14,7 @@ class InMemoryBarrageCache:
     def __init__(self, max_scenes: int = 32, max_items_per_scene: int = 10) -> None:
         self._max_scenes = max(1, max_scenes)
         self._max_items_per_scene = max(1, max_items_per_scene)
-        self._items: OrderedDict[tuple[str, str, str], list[BarrageItem]] = OrderedDict()
+        self._items: OrderedDict[tuple[str, str, str, str], list[BarrageItem]] = OrderedDict()
 
     def get(self, scene: SceneSummary, count: int) -> list[BarrageItem]:
         key = self._key(scene)
@@ -42,5 +42,7 @@ class InMemoryBarrageCache:
             self._items.popitem(last=False)
 
     @staticmethod
-    def _key(scene: SceneSummary) -> tuple[str, str, str]:
-        return (scene.activity, scene.pace, scene.event)
+    def _key(scene: SceneSummary) -> tuple[str, str, str, str]:
+        # Include screen_context so cached barrages for "VS Code" are not
+        # returned when the user switches to "Chrome".
+        return (scene.activity, scene.pace, scene.event, scene.screen_context)

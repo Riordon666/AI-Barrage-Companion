@@ -44,6 +44,7 @@ class BasicPrivacyGuard:
                 pace=scene.pace,
                 event=scene.event,
                 confidence=max(0.0, min(scene.confidence, 1.0)),
+                screen_context=scene.screen_context,
             ),
             blocked_fields=blocked_fields,
             reason=None,

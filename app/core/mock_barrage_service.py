@@ -7,6 +7,7 @@ import time
 from uuid import uuid4
 
 from app.constants import DEFAULT_BARRAGE_DURATION_SECONDS
+from app.core.utils import priority_for_event
 from app.models import BarrageItem, GenerationRequest, GenerationResult, Persona, SceneEvent
 
 
@@ -76,7 +77,7 @@ class MockBarrageService:
                     id=str(uuid4()),
                     text=text,
                     persona=persona,
-                    priority=self._priority_for_event(request.scene.event),
+                    priority=priority_for_event(request.scene.event),
                     created_at=created_at,
                     duration_seconds=DEFAULT_BARRAGE_DURATION_SECONDS,
                 )
@@ -95,11 +96,3 @@ class MockBarrageService:
         if not available:
             return None
         return self._rng.choice(available)
-
-    @staticmethod
-    def _priority_for_event(event: SceneEvent) -> int:
-        if event == "highlight":
-            return 10
-        if event == "stuck":
-            return 5
-        return 0

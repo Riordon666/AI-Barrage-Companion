@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from app.models import CapturedFrame, FrameStats, SceneSummary
+from typing import cast
+
+from app.core.utils import as_activity, as_scene_event, raw_image_bytes
+from app.models import Activity, CapturedFrame, FrameStats, Pace, SceneSummary, SceneEvent
 
 
 class BasicFrameAnalyzer:
@@ -56,12 +59,12 @@ class BasicFrameAnalyzer:
             change_ratio=change_ratio,
             static_seconds=self._static_seconds,
             repeat_score=repeat_score,
-            pace=pace,
+            pace=cast(Pace, pace),
         )
         scene = SceneSummary(
-            activity=activity,  # type: ignore[arg-type]
-            pace=pace,
-            event=event,  # type: ignore[arg-type]
+            activity=as_activity(activity),
+            pace=cast(Pace, pace),
+            event=as_scene_event(event),
             confidence=confidence,
         )
 
@@ -70,7 +73,7 @@ class BasicFrameAnalyzer:
         return stats, scene
 
     def _sample(self, frame: CapturedFrame) -> list[int]:
-        raw = self._raw_bytes(frame.image)
+        raw = raw_image_bytes(frame.image)
         if not raw:
             return [0] * (self._sample_width * self._sample_height)
 
@@ -89,22 +92,6 @@ class BasicFrameAnalyzer:
                 else:
                     samples.append(0)
         return samples
-
-    def _raw_bytes(self, image: object) -> bytes:
-        if isinstance(image, bytes):
-            return image
-        if isinstance(image, bytearray):
-            return bytes(image)
-        raw = getattr(image, "raw", None)
-        if isinstance(raw, bytes):
-            return raw
-        bgra = getattr(image, "bgra", None)
-        if isinstance(bgra, bytes):
-            return bgra
-        rgb = getattr(image, "rgb", None)
-        if isinstance(rgb, bytes):
-            return rgb
-        return b""
 
     @staticmethod
     def _change_ratio(previous: list[int], current: list[int]) -> float:

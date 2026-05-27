@@ -28,9 +28,12 @@ from app.core.capture_scheduler import BasicCaptureScheduler
 from app.core.frame_analyzer import BasicFrameAnalyzer
 from app.core.logger import get_logger, setup_logging
 from app.core.mock_barrage_service import DEFAULT_PERSONAS, MockBarrageService
+from app.core.ocr_engine import OcrCache, extract_screen_text
 from app.core.privacy_guard import BasicPrivacyGuard
 from app.core.screen_capture import MssScreenCapture
-from app.models import AppSettings, BarrageItem, FrameStats, GenerationRequest, SceneSummary
+from app.core.screen_context import capture_screen_context
+from app.core.utils import as_density
+from app.models import AppSettings, BarrageItem, Density, FrameStats, GenerationRequest, SceneSummary
 from app.ui.control_panel import ControlPanel
 from app.ui.overlay import PySideOverlayRenderer
 from app.ui.tray import AppTray
@@ -47,24 +50,32 @@ class RuntimeController(QObject):
         settings_store: SettingsStore,
         overlay: PySideOverlayRenderer,
         panel: ControlPanel,
+        *,
+        capture: MssScreenCapture | None = None,
+        analyzer: BasicFrameAnalyzer | None = None,
+        capture_scheduler: BasicCaptureScheduler | None = None,
+        privacy_guard: BasicPrivacyGuard | None = None,
+        mock_generator: MockBarrageService | None = None,
+        cache: InMemoryBarrageCache | None = None,
+        manager: BasicBarrageManager | None = None,
     ) -> None:
         super().__init__()
         self._settings = settings
         self._settings_store = settings_store
         self._overlay = overlay
         self._panel = panel
-        self._capture = MssScreenCapture()
-        self._analyzer = BasicFrameAnalyzer()
-        self._capture_scheduler = BasicCaptureScheduler()
-        self._privacy_guard = BasicPrivacyGuard()
-        self._mock_generator = MockBarrageService()
+        self._capture = capture or MssScreenCapture()
+        self._analyzer = analyzer or BasicFrameAnalyzer()
+        self._capture_scheduler = capture_scheduler or BasicCaptureScheduler()
+        self._privacy_guard = privacy_guard or BasicPrivacyGuard()
+        self._mock_generator = mock_generator or MockBarrageService()
         self._generator = self._build_generator()
-        self._cache = InMemoryBarrageCache()
+        self._cache = cache or InMemoryBarrageCache()
         self._overlay.set_display_options(
             settings.display_area_percent,
             settings.barrage_font_size,
         )
-        self._manager = BasicBarrageManager(
+        self._manager = manager or BasicBarrageManager(
             density=settings.density,
             track_height=self._overlay.track_height(),
         )
@@ -80,6 +91,24 @@ class RuntimeController(QObject):
         )
         self._paused = False
         self._ai_failures = 0  # consecutive AI generation failures
+        self._ocr_cache = OcrCache()
+
+        # -- Statistics & telemetry --
+        self._session_start = time.time()
+        self._stats = {
+            "barrages_sent": 0,
+            "barrages_ai": 0,
+            "barrages_mock": 0,
+            "barrages_cache": 0,
+            "captures": 0,
+            "api_calls": 0,
+            "api_failures": 0,
+            "tokens_approx_in": 0,
+            "tokens_approx_out": 0,
+        }
+        self._last_ocr_text: str = ""
+        self._last_api_request: str = ""
+        self._last_api_response: str = ""
 
         self._capture_timer = QTimer(self)
         self._capture_timer.timeout.connect(self._capture_and_generate)
@@ -108,11 +137,61 @@ class RuntimeController(QObject):
         self._capture_and_generate()
         self._restart_capture_timer()
         source = "模拟弹幕" if isinstance(self._generator, MockBarrageService) else "AI"
-        logger.info("应用启动 | 弹幕来源=%s | 密度=%s", source, self._settings.density)
+        features: list[str] = [source]
+        if self._settings.enable_ocr:
+            features.append("OCR")
+        if self._settings.enable_window_title:
+            features.append("窗口检测")
+        if self._settings.enable_vision:
+            features.append("视觉模式")
+        logger.info(
+            "应用启动 | 弹幕来源=%s | 密度=%s | 特性=%s",
+            source, self._settings.density, "+".join(features) if len(features) > 1 else features[0],
+        )
+
+        # --- Quick OCR self-test on first capture ---
+        if self._settings.enable_ocr:
+            try:
+                frame = self._capture.capture()
+                result = extract_screen_text(frame)
+                if result:
+                    self._panel.append_ocr_log(f"OCR 自检通过: 识别到 {len(result)} 字符")
+                else:
+                    self._panel.append_ocr_log(
+                        "OCR 自检: 当前屏幕未识别到文字"
+                    )
+            except Exception:
+                pass  # self-test is non-critical
 
     def shutdown(self) -> None:
         self._executor.shutdown(wait=False, cancel_futures=True)
         logger.info("应用关闭")
+
+    # -- statistics (read by control panel) --
+
+    @property
+    def stats(self) -> dict[str, int]:
+        return dict(self._stats)
+
+    @property
+    def session_uptime(self) -> float:
+        return time.time() - self._session_start
+
+    @property
+    def last_ocr_text(self) -> str:
+        return self._last_ocr_text
+
+    @property
+    def last_api_request(self) -> str:
+        return self._last_api_request
+
+    @property
+    def last_api_response(self) -> str:
+        return self._last_api_response
+
+    @property
+    def is_paused(self) -> bool:
+        return self._paused
 
     def set_paused(self, paused: bool) -> None:
         self._paused = paused
@@ -130,7 +209,7 @@ class RuntimeController(QObject):
             logger.info("已恢复运行")
 
     def set_density(self, density: str) -> None:
-        self._settings.density = density  # type: ignore[assignment]
+        self._settings.density = as_density(density)
         self._manager.set_density(density)
         logger.info("密度切换为: %s", density)
 
@@ -160,29 +239,72 @@ class RuntimeController(QObject):
         if self._paused or self._generation_future is not None:
             return
 
+        self._stats["captures"] += 1
         encoded_frame: str | None = None
+        screen_context_text = ""
+
         try:
             frame = self._capture.capture()
+
+            # --- OCR: extract readable text from the screenshot ---
+            ocr_text = ""
+            if self._settings.enable_ocr and not isinstance(self._generator, MockBarrageService):
+                raw_text = extract_screen_text(frame)
+                if raw_text and self._ocr_cache.should_send(raw_text):
+                    ocr_text = raw_text
+                    self._last_ocr_text = ocr_text
+                    self._panel.append_ocr_log(
+                        f"识别到 {len(ocr_text)} 字符，已发送:\n{ocr_text}"
+                    )
+                    logger.info("OCR 识别 %d 字符: %.80s", len(ocr_text), ocr_text)
+                elif raw_text:
+                    self._panel.append_ocr_log(
+                        f"识别到 {len(raw_text)} 字符，重复内容已抑制:\n{raw_text[:120]}"
+                    )
+                else:
+                    self._panel.append_ocr_log("OCR 扫描完成，未识别到文字")
+            # -----------------------------------------------------
+
+            # --- Window title context ---
+            if self._settings.enable_window_title:
+                ctx = capture_screen_context()
+                if ctx.is_meaningful:
+                    screen_context_text = ctx.description
+                    logger.info("屏幕上下文: %s (%s)", ctx.description, ctx.app_category)
+
             if self._settings.enable_vision and not isinstance(self._generator, MockBarrageService):
                 encoded_frame = encode_frame_jpeg_base64(frame)
             self._last_stats, scene = self._analyzer.analyze(frame)
+
+            # Merge screen context sources into the scene summary.
+            # OCR text is the most specific signal — prepend it.
+            parts: list[str] = []
+            if ocr_text:
+                parts.append(f"屏幕文字: {ocr_text}")
+            if screen_context_text:
+                parts.append(screen_context_text)
+            if parts:
+                scene.screen_context = " | ".join(parts)
+
             decision = self._privacy_guard.sanitize(scene, self._settings)
             if not decision.allowed:
                 logger.debug("隐私过滤阻止: blocked=%s", decision.blocked_fields)
                 return
             self._last_scene = decision.sanitized_scene
-            logger.debug(
-                "截屏分析 | activity=%s pace=%s event=%s confidence=%.2f",
+            logger.info(
+                "截屏分析 | activity=%s pace=%s event=%s confidence=%.2f context=%s",
                 self._last_scene.activity, self._last_scene.pace,
                 self._last_scene.event, self._last_scene.confidence,
+                self._last_scene.screen_context[:80] if self._last_scene.screen_context else "(无)",
             )
-        except Exception as exc:
+        except (OSError, RuntimeError) as exc:
             logger.warning("截屏/分析异常: %s", exc)
             self._last_scene = SceneSummary(
                 activity="unknown",
                 pace="normal",
                 event="normal",
                 confidence=0.0,
+                screen_context=screen_context_text,
             )
 
         cached = self._cache.get(self._last_scene, DEFAULT_AI_BARRAGE_COUNT)
@@ -199,13 +321,34 @@ class RuntimeController(QObject):
             count=DEFAULT_AI_BARRAGE_COUNT,
             image_base64=encoded_frame,
         )
+
+        # --- Log API request ON MAIN THREAD (before submit) ---
+        api_provider = self._settings.api.provider if self._settings.api else "none"
+        api_model = self._settings.api.model if self._settings.api else "none"
+        ctx_preview = (request.scene.screen_context or "(无)")[:120]
+        scene = request.scene
+        self._panel.append_api_log(
+            f">>> 发送请求: provider={api_provider} | model={api_model} | "
+            f"scene={scene.activity}/{scene.pace}/{scene.event} | "
+            f"image={'YES' if request.image_base64 else 'NO'}\n"
+            f"    context: {ctx_preview}"
+        )
+
         self._generation_future = self._executor.submit(self._generate_items, request)
         self._restart_capture_timer()
 
     def _generate_items(self, request: GenerationRequest) -> list[BarrageItem]:
+        self._stats["api_calls"] += 1
+        # Rough token estimate: CJK ~1.5 tokens/char, ASCII ~0.3 tokens/char
+        text = (request.scene.screen_context or "") + " " * 200
+        cjk = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
+        ascii_chars = len(text) - cjk
+        self._stats["tokens_approx_in"] += int(cjk * 1.5 + ascii_chars * 0.3)
+
         result = self._generator.generate(request)
         if result.error:
-            logger.warning("弹幕生成降级: %s", result.error)
+            logger.warning("[API 响应] 失败: %s", result.error)
+            self._stats["api_failures"] += 1
             self._ai_failures += 1
             if self._ai_failures >= 3 and not isinstance(self._generator, MockBarrageService):
                 logger.warning("AI 连续 %d 次失败，自动切换为模拟模式", self._ai_failures)
@@ -213,12 +356,31 @@ class RuntimeController(QObject):
                 self._panel.set_status("AI 请求连续失败，已切换模拟模式", "error")
         else:
             self._ai_failures = 0
-            logger.info("弹幕生成成功 | source=%s | count=%d", result.source, len(result.items))
+            # Track token output
+            total_text = "".join(item.text for item in result.items)
+            cjk = sum(1 for c in total_text if "\u4e00" <= c <= "\u9fff")
+            self._stats["tokens_approx_out"] += int(cjk * 1.5 + (len(total_text) - cjk) * 0.3)
+            if result.source == "ai":
+                self._stats["barrages_ai"] += len(result.items)
+                self._last_api_response = "\n".join(item.text for item in result.items)
+            elif result.source == "mock":
+                self._stats["barrages_mock"] += len(result.items)
+            elif result.source == "cache":
+                self._stats["barrages_cache"] += len(result.items)
+            # Log the response with actual barrage texts
+            barrage_texts = " | ".join(item.text for item in result.items)
+            logger.info(
+                "[API 响应] source=%s | count=%d | barrages=[%s]",
+                result.source, len(result.items), barrage_texts,
+            )
         if result.items:
             self._cache.put(request.scene, result.items)
         return result.items
 
     def _render_tick(self) -> None:
+        if self._overlay.barrage_region_height() <= 0:
+            return
+
         if self._generation_future is not None and self._generation_future.done():
             try:
                 items = self._generation_future.result()
@@ -226,9 +388,6 @@ class RuntimeController(QObject):
             except Exception as exc:
                 logger.error("生成任务异常: %s", exc)
             self._generation_future = None
-
-        if self._overlay.barrage_region_height() <= 0:
-            return
 
         assignments = self._manager.tick(
             now=time.time(),
@@ -243,7 +402,10 @@ class RuntimeController(QObject):
         is_highlight = self._last_scene.event == "highlight"
         table = DENSITY_HIGHLIGHT_INTERVAL if is_highlight else DENSITY_SEND_INTERVAL
         density = str(self._settings.density)
-        return table.get(density, (400, 2000))  # type: ignore[return-value]
+        result = table.get(density)
+        if result is not None:
+            return (int(result[0]), int(result[1]))
+        return (400, 2000)
 
     def _schedule_next_send(self) -> None:
         if not self._paused:
@@ -256,6 +418,7 @@ class RuntimeController(QObject):
             item = self._barrage_buffer.pop(0)
             self._apply_persona_speed(item)
             self._manager.enqueue([item])
+            self._stats["barrages_sent"] += 1
 
         self._manager.set_burst(self._last_scene.event == "highlight")
         self._schedule_next_send()
@@ -331,6 +494,7 @@ def run_application(argv: list[str] | None = None) -> int:
     panel = ControlPanel(settings)
     tray = AppTray(panel)
     controller = RuntimeController(settings, settings_store, overlay, panel)
+    panel.set_controller(controller)
     app.aboutToQuit.connect(controller.shutdown)
 
     if warning:

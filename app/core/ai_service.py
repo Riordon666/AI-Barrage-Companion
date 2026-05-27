@@ -18,6 +18,7 @@ import logging
 from app.constants import DEFAULT_BARRAGE_DURATION_SECONDS
 from app.config.provider_presets import provider_for_key
 from app.core.mock_barrage_service import DEFAULT_PERSONAS, MockBarrageService
+from app.core.utils import as_persona, priority_for_event, raw_image_bytes
 from app.models import ApiConfig, BarrageItem, CapturedFrame, GenerationRequest, GenerationResult, Persona, SceneEvent
 
 logger = logging.getLogger("abc.ai_service")
@@ -28,10 +29,11 @@ VALID_PERSONAS = set(DEFAULT_PERSONAS)
 
 def encode_frame_jpeg_base64(frame: CapturedFrame, quality: int = 50) -> str:
     """Convert a mss CapturedFrame to a base64 data-uri JPEG string."""
-    raw = _raw_bytes(frame.image)
+    raw = raw_image_bytes(frame.image)
     bpp = max(1, len(raw) // max(1, frame.width * frame.height))
     if bpp >= 3:
-        pil_image = Image.frombuffer("RGB", (frame.width, frame.height), raw, "raw", "BGRX")
+        raw_mode = _mss_raw_mode()
+        pil_image = Image.frombuffer("RGB", (frame.width, frame.height), raw, "raw", raw_mode)
     else:
         # Grayscale fallback
         pil_image = Image.frombuffer("L", (frame.width, frame.height), raw, "raw", "L")
@@ -47,21 +49,13 @@ def encode_frame_jpeg_base64(frame: CapturedFrame, quality: int = 50) -> str:
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
-def _raw_bytes(image: object) -> bytes:
-    if isinstance(image, bytes):
-        return image
-    if isinstance(image, bytearray):
-        return bytes(image)
-    raw = getattr(image, "raw", None)
-    if isinstance(raw, bytes):
-        return raw
-    bgra = getattr(image, "bgra", None)
-    if isinstance(bgra, bytes):
-        return bgra
-    rgb = getattr(image, "rgb", None)
-    if isinstance(rgb, bytes):
-        return rgb
-    return b""
+def _mss_raw_mode() -> str:
+    """Return the correct mss raw pixel mode for the current platform."""
+    import sys
+
+    if sys.platform == "win32":
+        return "BGRX"
+    return "BGRA"
 
 
 class OpenAICompatibleBarrageService:
@@ -116,7 +110,7 @@ class OpenAICompatibleBarrageService:
                 fallback = self._fallback.generate(request)
                 fallback.error = "api_error"
                 return fallback
-        except Exception as exc:
+        except (httpx.RequestError, json.JSONDecodeError, KeyError, IndexError) as exc:
             logger.warning("API 请求异常: %s", exc)
             fallback = self._fallback.generate(request)
             fallback.error = "api_error"
@@ -153,8 +147,8 @@ class OpenAICompatibleBarrageService:
                 BarrageItem(
                     id=str(uuid4()),
                     text=text,
-                    persona=persona,  # type: ignore[arg-type]
-                    priority=self._priority_for_event(request.scene.event),
+                    persona=as_persona(persona),
+                    priority=priority_for_event(request.scene.event),
                     created_at=now,
                     duration_seconds=DEFAULT_BARRAGE_DURATION_SECONDS,
                 )
@@ -195,11 +189,39 @@ class OpenAICompatibleBarrageService:
         headers = {"Content-Type": "application/json"}
         if self._api_config.api_key:
             headers["Authorization"] = f"Bearer {self._api_config.api_key}"
-        client = self._client or httpx.Client(timeout=self._api_config.timeout_seconds)
-        response = client.post(url, headers=headers, json=payload)
-        response.raise_for_status()
-        data = response.json()
-        return str(data["choices"][0]["message"]["content"])
+
+        # Extract text part of user_content for logging (may be str or vision list)
+        user_text = user_content if isinstance(user_content, str) else (
+            next((b["text"] for b in user_content if isinstance(b, dict) and b.get("type") == "text"), "")
+        )
+        try:
+            logger.info(
+                "[HTTP 请求] %s | model=%s | prompt_len=%d | image=%s",
+                url, self._api_config.model, len(user_text),
+                "YES" if request.image_base64 else "NO",
+            )
+        except Exception:
+            pass  # graceful with mock/test clients
+
+        def _do_post(client: httpx.Client) -> str:
+            response = client.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            data = response.json()
+            content = str(data["choices"][0]["message"]["content"])
+            try:
+                logger.info(
+                    "[HTTP 响应] status=%d | content_len=%d | preview=%.120s",
+                    response.status_code, len(content), content,
+                )
+            except Exception:
+                pass  # mock client may not expose status_code
+            return content
+
+        if self._client is not None:
+            return _do_post(self._client)
+
+        with httpx.Client(timeout=self._api_config.timeout_seconds) as client:
+            return _do_post(client)
 
     @staticmethod
     def _system_prompt(request: GenerationRequest) -> str:
@@ -208,14 +230,27 @@ class OpenAICompatibleBarrageService:
             "每条弹幕 1 到 12 个中文字符，不要脏话、人身攻击或隐私内容。"
         )
         if request.image_base64:
-            base += "你可以看到用户屏幕截图，请根据画面内容生成贴合场景的弹幕。"
+            base += (
+                "你可以看到用户当前的屏幕截图，请仔细观察画面内容（代码、游戏、编辑器、网页等），"
+                "生成贴合实际场景的弹幕。"
+            )
         return base
 
     @staticmethod
     def _user_prompt(request: GenerationRequest) -> str:
         scene = request.scene
         lines = [
-            f"场景: activity={scene.activity}, pace={scene.pace}, event={scene.event}, confidence={scene.confidence:.2f}",
+            f"场景信号: activity={scene.activity}, pace={scene.pace}, "
+            f"event={scene.event}, confidence={scene.confidence:.2f}",
+        ]
+
+        # --- Screen context: the key addition ---
+        if scene.screen_context:
+            lines.append(f"屏幕内容: {scene.screen_context}")
+            lines.append("请根据上述屏幕内容生成弹幕，弹幕要和用户正在做的事相关。")
+        # ----------------------------------------
+
+        lines += [
             f"人格可选: {', '.join(request.personas or DEFAULT_PERSONAS)}",
             f"数量: {request.count}",
             '格式: [{"persona":"fun","text":"有点意思"}]',
@@ -242,13 +277,10 @@ class OpenAICompatibleBarrageService:
 
     @staticmethod
     def _clean_text(text: str) -> str:
+        # Normalise Unicode to avoid splitting composite characters, then
+        # strip whitespace and hard-cap at 12 characters.
+        import unicodedata
+
+        text = unicodedata.normalize("NFC", text)
         text = re.sub(r"\s+", "", text)
         return text[:12]
-
-    @staticmethod
-    def _priority_for_event(event: SceneEvent) -> int:
-        if event == "highlight":
-            return 10
-        if event == "stuck":
-            return 5
-        return 0

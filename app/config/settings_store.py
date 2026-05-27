@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from app.config.settings import default_settings
 from app.constants import (
@@ -14,6 +14,7 @@ from app.constants import (
     DEFAULT_SETTINGS_FILENAME,
 )
 from app.config.provider_presets import provider_for_key
+from app.core.utils import as_density, as_privacy_mode
 from app.models import ApiConfig, AppSettings, CostMode, Density, PrivacyMode
 
 
@@ -35,16 +36,24 @@ class SettingsStore:
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
             return self._settings_from_dict(raw), None
-        except Exception:
+        except (json.JSONDecodeError, OSError):
             return default_settings(), "配置文件损坏，已回退默认配置"
 
     def save(self, settings: AppSettings) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         data = asdict(settings)
-        self.path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        json_text = json.dumps(data, ensure_ascii=False, indent=2)
+
+        # Atomic write: write to temp file first, then rename to avoid partial/corrupt writes.
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = self.path.with_suffix(self.path.suffix + ".tmp")
+        try:
+            tmp_path.write_text(json_text, encoding="utf-8")
+            tmp_path.replace(self.path)
+        except OSError:
+            # Disk full, permission denied, or filesystem error – fail silently
+            # rather than crashing the application. Settings are still held
+            # in-memory and can be saved on the next attempt.
+            pass
 
     def _settings_from_dict(self, raw: dict[str, Any]) -> AppSettings:
         api_raw = raw.get("api")
@@ -73,16 +82,34 @@ class SettingsStore:
         if privacy_mode not in VALID_PRIVACY_MODES:
             privacy_mode = "strict"
 
+        # API history
+        api_history: list[ApiConfig] = []
+        history_raw = raw.get("api_history")
+        if isinstance(history_raw, list):
+            for entry in history_raw:
+                if isinstance(entry, dict):
+                    hp = str(entry.get("provider", "custom"))
+                    hp_preset = provider_for_key(hp)
+                    api_history.append(ApiConfig(
+                        provider=hp,
+                        base_url=str(entry.get("base_url", hp_preset.base_url)),
+                        api_key=str(entry.get("api_key", "")),
+                        model=str(entry.get("model", hp_preset.models[0])),
+                        timeout_seconds=float(entry.get("timeout_seconds", 20.0)),
+                        max_retries=max(0, int(entry.get("max_retries", 1))),
+                    ))
+
         return AppSettings(
             capture_interval_seconds=max(
                 0.5,
                 float(raw.get("capture_interval_seconds", 4.0)),
             ),
-            density=density,  # type: ignore[arg-type]
-            cost_mode=cost_mode,  # type: ignore[arg-type]
+            density=as_density(density),
+            cost_mode=cast(CostMode, cost_mode),
             api=api,
+            api_history=api_history,
             use_mock_when_api_missing=bool(raw.get("use_mock_when_api_missing", True)),
-            privacy_mode=privacy_mode,  # type: ignore[arg-type]
+            privacy_mode=as_privacy_mode(privacy_mode),
             enable_ocr=bool(raw.get("enable_ocr", False)),
             enable_window_title=bool(raw.get("enable_window_title", False)),
             enable_vision=bool(raw.get("enable_vision", False)),

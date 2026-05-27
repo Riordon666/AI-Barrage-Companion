@@ -12,6 +12,7 @@ from app.constants import (
     DEFAULT_TRACK_HEIGHT,
     HIGHLIGHT_GAP_DIVISOR,
 )
+from app.core.utils import as_density
 from app.models import BarrageItem, Density, TrackAssignment
 
 # Minimum horizontal gap (pixels) between consecutive barrages on the same track.
@@ -27,6 +28,7 @@ DENSITY_GAP: dict[Density, int] = {
 class _ActiveEntry:
     assignment: TrackAssignment
     release_at: float
+    started_at: float  # timestamp when the barrage began scrolling on this track
 
 
 class BasicBarrageManager:
@@ -115,6 +117,7 @@ class BasicBarrageManager:
                 _ActiveEntry(
                     assignment=assignment,
                     release_at=now + max(0.1, item.duration_seconds),
+                    started_at=now,
                 )
             )
             self._recent_texts[self._normalize_text(item.text)] = (
@@ -127,7 +130,7 @@ class BasicBarrageManager:
     def set_density(self, density: str) -> None:
         if density not in DENSITY_GAP:
             raise ValueError(f"Unsupported density: {density}")
-        self._density = density  # type: ignore[assignment]
+        self._density = as_density(density)
 
     def set_track_layout(self, track_height: int, track_gap: int | None = None) -> None:
         self._track_height = max(1, track_height)
@@ -194,7 +197,7 @@ class BasicBarrageManager:
                 result.append(track_index)
                 continue
             last = entries[-1]
-            elapsed = max(0.0, now - last.assignment.item.created_at)
+            elapsed = max(0.0, now - last.started_at)
             if elapsed * last.assignment.speed_px_per_second >= gap:
                 result.append(track_index)
         return result

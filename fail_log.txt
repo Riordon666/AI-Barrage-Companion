@@ -1,0 +1,43 @@
+.....................FFF...FFF.......F..F............................... [ 93%]
+.....                                                                    [100%]
+================================== FAILURES ===================================
+E   AttributeError: 'FakePanel' object has no attribute 'append_api_log'
+D:\AI-Barrage-Companion\app\ui\application.py:330: AttributeError: 'FakePanel' object has no attribute 'append_api_log'
+E   AttributeError: 'FakePanel' object has no attribute 'append_api_log'
+D:\AI-Barrage-Companion\app\ui\application.py:330: AttributeError: 'FakePanel' object has no attribute 'append_api_log'
+E   AttributeError: 'FakePanel' object has no attribute 'append_api_log'
+D:\AI-Barrage-Companion\app\ui\application.py:330: AttributeError: 'FakePanel' object has no attribute 'append_api_log'
+E   AttributeError: 'FakePanel' object has no attribute 'append_api_log'
+D:\AI-Barrage-Companion\app\ui\application.py:330: AttributeError: 'FakePanel' object has no attribute 'append_api_log'
+E   AttributeError: 'FakePanel' object has no attribute 'append_api_log'
+D:\AI-Barrage-Companion\app\ui\application.py:330: AttributeError: 'FakePanel' object has no attribute 'append_api_log'
+E   AttributeError: 'FakePanel' object has no attribute 'append_api_log'
+D:\AI-Barrage-Companion\app\ui\application.py:330: AttributeError: 'FakePanel' object has no attribute 'append_api_log'
+E   AttributeError: 'FakePanel' object has no attribute 'append_api_log'
+D:\AI-Barrage-Companion\app\ui\application.py:330: AttributeError: 'FakePanel' object has no attribute 'append_api_log'
+E   AttributeError: 'FakePanel' object has no attribute 'append_api_log'
+------------------------------ Captured log call ------------------------------
+WARNING  abc.application:application.py:301 Ωÿ∆¡/∑÷Œˆ“Ï≥£: Simulated capture failure
+D:\AI-Barrage-Companion\app\ui\application.py:330: AttributeError: 'FakePanel' object has no attribute 'append_api_log'
+============================== warnings summary ===============================
+tests/test_integration.py::TestCaptureToGeneratePipeline::test_render_tick_consumes_completed_future
+tests/test_integration.py::TestCaptureToGeneratePipeline::test_render_tick_skips_future_when_viewport_zero
+tests/test_integration.py::TestCacheHit::test_cache_hit_returns_cached_items
+tests/test_integration.py::TestCacheHit::test_cache_not_used_for_highlight_events
+tests/test_integration.py::TestAIFallback::test_ai_falls_back_after_three_consecutive_failures
+tests/test_integration.py::TestAIFallback::test_ai_recovers_before_three_failures
+tests/test_integration.py::TestPrivacyFilter::test_strict_privacy_does_not_block_scene
+  D:\AI-Barrage-Companion\app\core\screen_capture.py:20: DeprecationWarning: mss.mss is deprecated and will be removed in a future release; use mss.MSS instead
+    with mss.mss() as sct:
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_integration.py::TestCaptureToGeneratePipeline::test_capture_and_generate_puts_items_in_buffer
+FAILED tests/test_integration.py::TestCaptureToGeneratePipeline::test_render_tick_consumes_completed_future
+FAILED tests/test_integration.py::TestCaptureToGeneratePipeline::test_render_tick_skips_future_when_viewport_zero
+FAILED tests/test_integration.py::TestCacheHit::test_cache_not_used_for_highlight_events
+FAILED tests/test_integration.py::TestAIFallback::test_ai_falls_back_after_three_consecutive_failures
+FAILED tests/test_integration.py::TestAIFallback::test_ai_recovers_before_three_failures
+FAILED tests/test_integration.py::TestPrivacyFilter::test_strict_privacy_does_not_block_scene
+FAILED tests/test_integration.py::TestCaptureErrors::test_graceful_fallback_on_capture_failure
+8 failed, 69 passed, 7 warnings in 1.06s

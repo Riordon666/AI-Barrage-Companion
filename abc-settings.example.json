@@ -1,0 +1,20 @@
+{
+  "capture_interval_seconds": 4.0,
+  "density": "medium",
+  "cost_mode": "balanced",
+  "api": {
+    "provider": "deepseek",
+    "base_url": "https://api.deepseek.com/v1",
+    "api_key": "请填入你的 API Key",
+    "model": "deepseek-chat",
+    "timeout_seconds": 20.0,
+    "max_retries": 1
+  },
+  "use_mock_when_api_missing": true,
+  "privacy_mode": "strict",
+  "enable_ocr": false,
+  "enable_window_title": false,
+  "enable_vision": false,
+  "display_area_percent": 65,
+  "barrage_font_size": 18
+}

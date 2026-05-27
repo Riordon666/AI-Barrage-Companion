@@ -26,6 +26,20 @@ class ApiConfig:
     timeout_seconds: float = 20.0
     max_retries: int = 1
 
+    def __repr__(self) -> str:
+        masked = self._mask_key(self.api_key)
+        return (
+            f"ApiConfig(provider={self.provider!r}, base_url={self.base_url!r}, "
+            f"api_key={masked!r}, model={self.model!r}, "
+            f"timeout_seconds={self.timeout_seconds}, max_retries={self.max_retries})"
+        )
+
+    @staticmethod
+    def _mask_key(key: str) -> str:
+        if len(key) <= 8:
+            return "***"
+        return key[:4] + "****" + key[-4:]
+
 
 @dataclass
 class AppSettings:
@@ -33,6 +47,7 @@ class AppSettings:
     density: Density = "medium"
     cost_mode: CostMode = "balanced"
     api: ApiConfig | None = None
+    api_history: list[ApiConfig] = field(default_factory=list)
     use_mock_when_api_missing: bool = True
     privacy_mode: PrivacyMode = "strict"
     enable_ocr: bool = False
@@ -64,6 +79,7 @@ class SceneSummary:
     pace: Pace
     event: SceneEvent
     confidence: float
+    screen_context: str = ""  # human-readable description e.g. "正在 VS Code 中编写代码"
 
 
 @dataclass
