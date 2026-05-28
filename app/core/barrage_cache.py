@@ -11,7 +11,7 @@ from app.models import BarrageItem, SceneSummary
 class InMemoryBarrageCache:
     """Small FIFO cache for reusable scene comments."""
 
-    def __init__(self, max_scenes: int = 32, max_items_per_scene: int = 10) -> None:
+    def __init__(self, max_scenes: int = 32, max_items_per_scene: int = 50) -> None:
         self._max_scenes = max(1, max_scenes)
         self._max_items_per_scene = max(1, max_items_per_scene)
         self._items: OrderedDict[tuple[str, str, str, str], list[BarrageItem]] = OrderedDict()

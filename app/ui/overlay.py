@@ -37,6 +37,8 @@ class PySideOverlayRenderer(QWidget):
         self._labels: list[BarrageLabel] = []
         self._display_area_percent = 65
         self._font_size = 18
+        self._opacity_percent = 100
+        self._speed_level = 2  # 0=slow .. 4=fast
         self.setWindowTitle("AI Barrage Companion Overlay")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
@@ -58,9 +60,20 @@ class PySideOverlayRenderer(QWidget):
         for assignment in assignments:
             self._create_barrage(assignment)
 
-    def set_display_options(self, display_area_percent: int, font_size: int) -> None:
+    def set_display_options(self, display_area_percent: int, font_size: int,
+                            opacity_percent: int = 100, speed_level: int = 2) -> None:
         self._display_area_percent = max(0, min(100, display_area_percent))
         self._font_size = max(12, min(48, font_size))
+        self._opacity_percent = max(0, min(100, opacity_percent))
+        self._speed_level = max(0, min(4, speed_level))
+        self.setWindowOpacity(self._opacity_percent / 100.0)
+
+    def set_opacity(self, percent: int) -> None:
+        self._opacity_percent = max(0, min(100, percent))
+        self.setWindowOpacity(self._opacity_percent / 100.0)
+
+    def set_speed(self, level: int) -> None:
+        self._speed_level = max(0, min(4, level))
 
     def barrage_region_height(self) -> int:
         return int(self.height() * self._display_area_percent / 100)
@@ -96,7 +109,11 @@ class PySideOverlayRenderer(QWidget):
         label.move(assignment.start_x, min(assignment.y, max(0, self.barrage_region_height() - label.height())))
         label.show()
 
-        duration_ms = max(500, int(assignment.item.duration_seconds * 1000))
+        # Speed level → multiplier: 0=0.5x, 1=0.75x, 2=1.0x, 3=1.5x, 4=2.0x
+        _SPEED_MUL = [0.5, 0.75, 1.0, 1.5, 2.0]
+        speed_mul = _SPEED_MUL[self._speed_level]
+        base_ms = max(500, int(assignment.item.duration_seconds * 1000))
+        duration_ms = max(300, int(base_ms / speed_mul))
         animation = QPropertyAnimation(label, b"pos", self)
         animation.setDuration(duration_ms)
         animation.setStartValue(label.pos())

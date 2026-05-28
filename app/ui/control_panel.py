@@ -85,6 +85,30 @@ _C = {
 _SIDEBAR_W = 216
 _SIDEBAR_COLLAPSED_W = 64
 
+_COMBO_STYLE = f"""
+    QComboBox {{
+        background: rgba(159,130,253,0.06);
+        color: {_C['text']};
+        border: 1px solid {_C['border']};
+        border-radius: 8px;
+        padding: 6px 12px;
+        font-size: 13px;
+        min-width: 120px;
+    }}
+    QComboBox:hover {{ border-color: {_C['accent']}; }}
+    QComboBox::drop-down {{ border: none; padding-right: 8px; }}
+    QComboBox::down-arrow {{ image: none; }}
+    QComboBox QAbstractItemView {{
+        background: #ffffff;
+        color: {_C['text']};
+        border: 1px solid {_C['border']};
+        border-radius: 8px;
+        padding: 4px;
+        selection-background-color: rgba(159,130,253,0.15);
+        outline: none;
+    }}
+"""
+
 
 # ─── Shadow helper ──────────────────────────────────────────────────────
 
@@ -202,7 +226,7 @@ class GlowDot(QWidget):
 # ─── Stat Card (custom painted) ────────────────────────────────────────
 
 class StatCard(QFrame):
-    """Custom-painted metric card with sparkline, glow, and gradient."""
+    """Clean metric card — value centered, no sparkline chart."""
 
     def __init__(self, title: str, value: str = "0", color: str = _C["accent"],
                  icon: str = "", yellow: bool = False, parent=None):
@@ -213,10 +237,9 @@ class StatCard(QFrame):
         self._icon = icon
         self._yellow = yellow
         self._hover = 0.0
-        self.setFixedHeight(110)
-        self.setMinimumWidth(130)
+        self.setFixedHeight(90)
+        self.setMinimumWidth(110)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover)
-        self._sparkline = Sparkline(color, self)
 
         self._glow_timer = QTimer(self)
         self._glow_timer.timeout.connect(self._glow_tick)
@@ -225,10 +248,6 @@ class StatCard(QFrame):
 
     def set_value(self, value: str) -> None:
         self._value = value
-        try:
-            self._sparkline.push(float(value))
-        except (ValueError, TypeError):
-            pass
         self.update()
 
     def enterEvent(self, event) -> None:  # type: ignore[override]
@@ -245,56 +264,36 @@ class StatCard(QFrame):
             self._hover += diff * 0.15
             self.update()
 
-    def resizeEvent(self, event) -> None:  # type: ignore[override]
-        super().resizeEvent(event)
-        self._sparkline.setGeometry(16, self.height() - 40, self.width() - 32, 32)
-
     def paintEvent(self, event) -> None:  # type: ignore[override]
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        r = QRectF(0, 0, self.width(), self.height())
-        radius = 16.0
+        w, h = self.width(), self.height()
+        r = QRectF(0, 0, w, h)
+        radius = 14.0
 
-        # Background
         path = QPainterPath()
         path.addRoundedRect(r, radius, radius)
 
         if self._yellow:
-            bg_c = QColor(251, 234, 3, int(25 + 12 * self._hover))
+            bg_c = QColor(251, 234, 3, int(20 + 10 * self._hover))
             border_c = QColor(251, 234, 3, int(50 + 30 * self._hover))
         else:
-            bg_c = QColor(159, 130, 253, int(22 + 12 * self._hover))
-            border_c = QColor(159, 130, 253, int(50 + 40 * self._hover))
+            bg_c = QColor(159, 130, 253, int(18 + 8 * self._hover))
+            border_c = QColor(159, 130, 253, int(45 + 35 * self._hover))
 
         p.fillPath(path, bg_c)
         p.setPen(QPen(border_c, 1))
         p.drawPath(path)
 
-        # Hover glow
-        if self._hover > 0.01:
-            glow = QRadialGradient(r.width() / 2, r.height(), r.width() * 0.8)
-            gc = QColor(self._color)
-            gc.setAlpha(int(15 * self._hover))
-            glow.setColorAt(0, gc)
-            gc.setAlpha(0)
-            glow.setColorAt(1, gc)
-            p.fillPath(path, glow)
-
-        # Icon
-        if self._icon:
-            p.setFont(QFont("Segoe UI Emoji", 14))
-            p.setPen(QColor(self._color))
-            p.drawText(QRectF(16, 14, 28, 22), Qt.AlignmentFlag.AlignCenter, self._icon)
-
         # Title
         p.setPen(QColor(_C["text3"]))
-        p.setFont(QFont("Segoe UI", 10, QFont.Weight.Medium))
-        p.drawText(QRectF(46, 16, self.width() - 60, 18), Qt.AlignmentFlag.AlignLeft, self._title)
+        p.setFont(QFont("Segoe UI", 10))
+        p.drawText(QRectF(0, 14, w, 18), Qt.AlignmentFlag.AlignCenter, self._title)
 
         # Value
-        p.setPen(QColor(self._color))
-        p.setFont(QFont("Segoe UI", 24, QFont.Weight.Bold))
-        p.drawText(QRectF(16, 36, self.width() - 32, 36), Qt.AlignmentFlag.AlignLeft, self._value)
+        p.setPen(QColor(_C["text"]))
+        p.setFont(QFont("Segoe UI", 20, QFont.Weight.ExtraBold))
+        p.drawText(QRectF(0, 34, w, 34), Qt.AlignmentFlag.AlignCenter, self._value)
 
         p.end()
 
@@ -306,7 +305,7 @@ class ApiStatusCard(QFrame):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumHeight(120)
+        self.setMinimumHeight(148)
         self._provider = "未配置"
         self._model = ""
         self._url = ""
@@ -349,12 +348,12 @@ class ApiStatusCard(QFrame):
         p.setPen(QColor(_C["text"]))
         p.setFont(QFont("Segoe UI", 15, QFont.Weight.Bold))
         name_text = f"{self._provider} · {self._model}" if self._model else self._provider
-        p.drawText(QRectF(24, 20, self.width() - 200, 24), Qt.AlignmentFlag.AlignLeft, name_text[:50])
+        p.drawText(QRectF(24, 22, self.width() - 200, 24), Qt.AlignmentFlag.AlignLeft, name_text[:50])
 
         # Status badge
         if self._online:
             badge_w = 42
-            badge_rect = QRectF(24 + min(p.fontMetrics().horizontalAdvance(name_text[:50]) + 12, self.width() - 250), 22, badge_w, 18)
+            badge_rect = QRectF(24 + min(p.fontMetrics().horizontalAdvance(name_text[:50]) + 12, self.width() - 250), 24, badge_w, 18)
             badge_path = QPainterPath()
             badge_path.addRoundedRect(badge_rect, 9, 9)
             p.fillPath(badge_path, QColor(34, 197, 94, 30))
@@ -365,7 +364,7 @@ class ApiStatusCard(QFrame):
         # URL
         p.setPen(QColor(_C["text3"]))
         p.setFont(QFont("Consolas", 10))
-        p.drawText(QRectF(24, 48, self.width() - 48, 16), Qt.AlignmentFlag.AlignLeft, self._url[:80])
+        p.drawText(QRectF(24, 52, self.width() - 48, 16), Qt.AlignmentFlag.AlignLeft, self._url[:80])
 
         # Stats grid (4 columns)
         stats = [
@@ -375,10 +374,10 @@ class ApiStatusCard(QFrame):
             ("成功率", self._success_rate, "ok" in self._success_rate.lower() or "%" in self._success_rate),
         ]
         col_w = (self.width() - 72) / 4
-        y_base = 76
+        y_base = 84
         for i, (label, value, is_ok) in enumerate(stats):
             x = 24 + i * col_w
-            stat_rect = QRectF(x, y_base, col_w - 8, 36)
+            stat_rect = QRectF(x, y_base, col_w - 8, 44)
             stat_path = QPainterPath()
             stat_path.addRoundedRect(stat_rect, 8, 8)
             p.fillPath(stat_path, QColor(159, 130, 253, 12))
@@ -386,13 +385,13 @@ class ApiStatusCard(QFrame):
             # Label
             p.setPen(QColor(_C["text3"]))
             p.setFont(QFont("Segoe UI", 9))
-            p.drawText(QRectF(x + 4, y_base + 4, col_w - 16, 14), Qt.AlignmentFlag.AlignCenter, label)
+            p.drawText(QRectF(x + 4, y_base + 6, col_w - 16, 14), Qt.AlignmentFlag.AlignCenter, label)
 
             # Value
             val_color = QColor(_C["green"]) if is_ok else QColor(_C["text"])
             p.setPen(val_color)
             p.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
-            p.drawText(QRectF(x + 4, y_base + 18, col_w - 16, 16), Qt.AlignmentFlag.AlignCenter, value)
+            p.drawText(QRectF(x + 4, y_base + 22, col_w - 16, 18), Qt.AlignmentFlag.AlignCenter, value)
 
         p.end()
 
@@ -499,7 +498,7 @@ class ActivityPanel(QFrame):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._items: list[tuple[str, str, str, str]] = []  # (color, desc, time, extra)
+        self._items: list[tuple[str, str, str, str]] = []  # (persona, text, time, source)
 
     def set_items(self, items: list[tuple[str, str, str, str]]) -> None:
         self._items = items
@@ -536,32 +535,35 @@ class ActivityPanel(QFrame):
 
         # Items
         y = sep_y + 8
-        row_h = 40
-        color_map = {
-            "purple": QColor(_C["accent"]),
-            "yellow": QColor(_C["accent2"]),
-            "green": QColor(_C["green"]),
-            "red": QColor(_C["red"]),
+        row_h = 38
+        persona_colors = {
+            "fun": QColor(_C["accent2"]),
+            "support": QColor(_C["green"]),
+            "sarcastic": QColor(_C["red"]),
+            "follower": QColor(_C["accent"]),
+            "troll": QColor(_C["red"]),
         }
-        for i, (color_name, desc, time_str, _extra) in enumerate(self._items[:8]):
+        for i, (persona, text, time_str, _source) in enumerate(self._items[:8]):
             if y + row_h > h - 8:
                 break
-            dot_color = color_map.get(color_name, QColor(_C["accent"]))
+            dot_color = persona_colors.get(persona, QColor(_C["accent"]))
 
             # Dot
             p.setBrush(QBrush(dot_color))
             p.setPen(Qt.PenStyle.NoPen)
             p.drawEllipse(QPointF(22, y + 10), 4, 4)
 
-            # Description
-            p.setPen(QColor(_C["text2"]))
-            p.setFont(QFont("Segoe UI", 11))
-            p.drawText(QRectF(34, y + 2, w - 50, 16), Qt.AlignmentFlag.AlignLeft, desc[:40])
+            # Barrage text
+            p.setPen(QColor(_C["text"]))
+            p.setFont(QFont("Microsoft YaHei", 11, QFont.Weight.DemiBold))
+            p.drawText(QRectF(34, y + 2, w - 50, 18), Qt.AlignmentFlag.AlignLeft,
+                       text[:20] + ("…" if len(text) > 20 else ""))
 
-            # Time
+            # Persona + time
             p.setPen(QColor(_C["text3"]))
             p.setFont(QFont("Segoe UI", 9))
-            p.drawText(QRectF(34, y + 20, w - 50, 14), Qt.AlignmentFlag.AlignLeft, time_str)
+            p.drawText(QRectF(34, y + 20, w - 50, 14), Qt.AlignmentFlag.AlignLeft,
+                       f"{persona} · {time_str}")
 
             y += row_h
 
@@ -575,7 +577,7 @@ class GreetingBanner(QFrame):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(68)
+        self.setFixedHeight(90)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.update)
         self._timer.start(1000)
@@ -608,27 +610,27 @@ class GreetingBanner(QFrame):
 
         p.setPen(QColor(_C["text"]))
         p.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
-        p.drawText(QRectF(24, 16, w - 200, 24), Qt.AlignmentFlag.AlignLeft, f"👋 {greet}，Barrager!")
+        p.drawText(QRectF(24, 18, w - 200, 26), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, f"👋 {greet}！")
 
         p.setPen(QColor(_C["text3"]))
         p.setFont(QFont("Segoe UI", 11))
-        p.drawText(QRectF(24, 44, w - 200, 18), Qt.AlignmentFlag.AlignLeft, "今天又是弹幕陪伴的一天~")
+        p.drawText(QRectF(24, 48, w - 200, 18), Qt.AlignmentFlag.AlignLeft, "今天又是弹幕陪伴的一天~")
 
-        # Clock
+        # Clock — larger rects to fully display time
         now = time.localtime()
         clock_text = time.strftime("%H:%M:%S", now)
-        date_text = time.strftime(f"%Y-%m-%d 星期{'日一二三四五六'[now.tm_wday]}", now)
+        date_text = time.strftime(f"%Y-%m-%d 星期{'一二三四五六日'[now.tm_wday]}", now)
 
         p.setPen(QColor(_C["text"]))
-        p.setFont(QFont("Segoe UI", 26, QFont.Weight.ExtraBold))
+        p.setFont(QFont("Segoe UI", 28, QFont.Weight.ExtraBold))
         fm = p.fontMetrics()
         clock_w = fm.horizontalAdvance(clock_text)
         clock_x = w - clock_w - 32
-        p.drawText(QRectF(clock_x, 12, clock_w + 16, 34), Qt.AlignmentFlag.AlignRight, clock_text)
+        p.drawText(QRectF(clock_x, 6, clock_w + 16, 42), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, clock_text)
 
         p.setPen(QColor(_C["text3"]))
         p.setFont(QFont("Segoe UI", 10))
-        p.drawText(QRectF(clock_x - 20, 48, clock_w + 36, 16), Qt.AlignmentFlag.AlignRight, date_text)
+        p.drawText(QRectF(clock_x - 12, 50, clock_w + 28, 18), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, date_text)
 
         p.end()
 
@@ -657,6 +659,102 @@ class ModernToggle(QCheckBox):
                 border-color: transparent;
             }}
         """)
+
+
+# ─── ComboBox (no scroll hijack) ─────────────────────────────────────────
+
+class NoScrollComboBox(QComboBox):
+    """QComboBox that ignores mouse wheel to prevent accidental value changes."""
+
+    def wheelEvent(self, event) -> None:  # type: ignore[override]
+        event.ignore()
+
+
+# ─── Sliders ────────────────────────────────────────────────────────────
+
+_STEP_SLIDER_STYLE = f"""
+    QSlider {{
+        background: transparent;
+        border: none;
+    }}
+    QSlider::groove:horizontal {{
+        background: transparent;
+        height: 6px;
+        border-radius: 3px;
+        border: 1px solid rgba(251,234,3,0.50);
+    }}
+    QSlider::handle:horizontal {{
+        background: {_C['accent2']};
+        width: 18px;
+        height: 18px;
+        margin: -6px 0;
+        border-radius: 9px;
+    }}
+    QSlider::handle:horizontal:pressed {{
+        background: {_C['accent']};
+    }}
+    QSlider::sub-page:horizontal {{
+        background: rgba(251,234,3,0.35);
+        border-radius: 3px;
+    }}
+"""
+
+_FONT_SIZE_LABELS = ["小", "较小", "适中", "较大", "大"]
+_FONT_SIZE_PX = [14, 18, 24, 32, 42]
+_DISPLAY_AREA_LABELS = ["20%", "40%", "60%", "80%", "100%"]
+_DISPLAY_AREA_VALUES = [20, 40, 60, 80, 100]
+_SPEED_LABELS = ["慢", "较慢", "适中", "较快", "快"]
+_SPEED_MULTIPLIERS = [0.5, 0.75, 1.0, 1.5, 2.0]
+
+
+class NoScrollSlider(QSlider):
+    """QSlider that ignores mouse wheel to prevent accidental value changes."""
+
+    def wheelEvent(self, event) -> None:  # type: ignore[override]
+        event.ignore()
+
+
+class TickedSlider(QWidget):
+    """Slider with discrete tick labels, for 5-level stepped settings."""
+
+    valueChanged = Signal(int)
+
+    def __init__(self, labels: list[str], parent=None):
+        super().__init__(parent)
+        self._labels = labels
+        self._n = len(labels)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(2)
+
+        self._slider = NoScrollSlider(Qt.Orientation.Horizontal)
+        self._slider.setRange(0, self._n - 1)
+        self._slider.setPageStep(1)
+        self._slider.setStyleSheet(_STEP_SLIDER_STYLE)
+        self._slider.valueChanged.connect(self._on_value)
+        lay.addWidget(self._slider)
+
+        self._val_label = QLabel(labels[0])
+        self._val_label.setFixedWidth(64)
+        self._val_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._val_label.setStyleSheet(f"color:{_C['text']};font-size:12px;font-weight:600;background:transparent;border:none")
+
+    def _on_value(self, v: int) -> None:
+        if 0 <= v < len(self._labels):
+            self._val_label.setText(self._labels[v])
+        self.valueChanged.emit(v)
+
+    def setValue(self, v: int) -> None:
+        self._slider.setValue(v)
+        if 0 <= v < len(self._labels):
+            self._val_label.setText(self._labels[v])
+
+    def value(self) -> int:
+        return self._slider.value()
+
+    def value_label(self) -> QLabel:
+        return self._val_label
 
 
 # ─── Section Card ──────────────────────────────────────────────────────
@@ -743,7 +841,8 @@ class ApiConfigDialog(QWidget):
         fl.setContentsMargins(18, 18, 18, 18)
         fl.setSpacing(12)
 
-        self._prov = QComboBox()
+        self._prov = NoScrollComboBox()
+        self._prov.setStyleSheet(_COMBO_STYLE)
         for sp in SUPPORTED_PROVIDERS:
             self._prov.addItem(sp.label, sp.key)
         self._prov.currentIndexChanged.connect(self._on_prov)
@@ -751,7 +850,8 @@ class ApiConfigDialog(QWidget):
         self._url = QLineEdit()
         self._url.setPlaceholderText("https://api.example.com/v1")
 
-        self._mdl = QComboBox()
+        self._mdl = NoScrollComboBox()
+        self._mdl.setStyleSheet(_COMBO_STYLE)
         self._mdl.setEditable(True)
 
         self._key = QLineEdit()
@@ -877,11 +977,12 @@ class ApiConfigDialog(QWidget):
             QLineEdit:focus, QComboBox:focus {{ border-color: {_C['accent']}; }}
             QComboBox::drop-down {{ border: none; padding-right: 8px; }}
             QComboBox QAbstractItemView {{
-                background: {_C['surface']};
+                background: #f8f7fc;
                 color: {_C['text']};
                 border: 1px solid {_C['border']};
                 border-radius: 10px;
-                selection-background-color: {_C['surface2']};
+                selection-background-color: rgba(159,130,253,0.18);
+                outline: none;
             }}
         """)
 
@@ -1031,18 +1132,22 @@ class ControlPanel(QWidget):
     densityChanged = Signal(str)
     displayAreaChanged = Signal(int)
     fontSizeChanged = Signal(int)
+    opacityChanged = Signal(int)
+    speedChanged = Signal(int)
     settingsSaved = Signal(AppSettings)
     quitRequested = Signal()
 
     _NAV = [
-        ("首页",  "🏠"),
-        ("设置",  "⚙"),
-        ("日志",  "📋"),
-        ("关于",  "ℹ"),
+        ("首页",    "🏠"),
+        ("API 配置", "🔗"),
+        ("设置",    "⚙"),
+        ("日志",    "📋"),
+        ("关于",    "💡"),
     ]
 
     _NAV_SUBTITLES = [
         "AI 弹幕陪伴 · 智能生成 · 实时互动",
+        "配置 AI 模型提供商、API Key 与连接测试",
         "自定义弹幕行为、显示效果与 API 连接",
         "实时监控系统运行状态、OCR 识别结果与 API 调用记录",
         "关于 AI Barrage Companion",
@@ -1076,6 +1181,7 @@ class ControlPanel(QWidget):
 
         self._stack = QStackedWidget()
         self._stack.addWidget(self._page_home())
+        self._stack.addWidget(self._page_api())
         self._stack.addWidget(self._page_settings())
         self._stack.addWidget(self._page_logs())
         self._stack.addWidget(self._page_about())
@@ -1104,35 +1210,30 @@ class ControlPanel(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
 
-        # Logo area
-        logo_area = QWidget()
-        logo_area.setStyleSheet("background:transparent;border:none")
-        logo_lay = QHBoxLayout(logo_area)
-        logo_lay.setContentsMargins(20, 24, 20, 8)
-        logo_lay.setSpacing(10)
-
-        logo_icon = QLabel("A")
-        logo_icon.setFixedSize(36, 36)
-        logo_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        logo_icon.setStyleSheet(f"""
-            background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 {_C['accent']}, stop:1 {_C['accent2']});
-            color: #000; font-size: 18px; font-weight: 800; border-radius: 10px; border: none;
+        # Logo area — gradient card
+        logo_card = QFrame()
+        logo_card.setStyleSheet(f"""
+            QFrame {{
+                background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {_C['accent']}, stop:1 {_C['accent2']});
+                border-radius: 14px;
+            }}
         """)
-        _shadow(logo_icon, radius=16, y=4, alpha=60)
-        logo_lay.addWidget(logo_icon)
+        _shadow(logo_card, radius=20, y=4, alpha=70)
+        logo_inner = QVBoxLayout(logo_card)
+        logo_inner.setContentsMargins(18, 14, 18, 14)
+        logo_inner.setSpacing(2)
+        logo_cn = QLabel("AI 弹幕伴侣")
+        logo_cn.setStyleSheet("color:#000;font-size:14px;font-weight:800;background:transparent;border:none")
+        logo_inner.addWidget(logo_cn)
+        logo_en = QLabel("AI BARRAGE COMPANION")
+        logo_en.setStyleSheet("color:rgba(0,0,0,0.55);font-size:8px;font-weight:600;background:transparent;border:none;letter-spacing:0.8px")
+        logo_inner.addWidget(logo_en)
+        self._logo_card = logo_card
 
-        self._logo_text_area = QVBoxLayout()
-        self._logo_text_area.setSpacing(0)
-        logo_text = QLabel("AI BARRAGE")
-        logo_text.setStyleSheet(f"color:{_C['text']};font-size:12px;font-weight:700;background:transparent;border:none;letter-spacing:0.5px")
-        self._logo_text_area.addWidget(logo_text)
-        logo_sub = QLabel("COMPANION")
-        logo_sub.setStyleSheet(f"color:{_C['text3']};font-size:9px;background:transparent;border:none;letter-spacing:1px")
-        self._logo_text_area.addWidget(logo_sub)
-        logo_lay.addLayout(self._logo_text_area)
-        logo_lay.addStretch()
-        self._logo_text_widgets = [logo_text, logo_sub]
-        lay.addWidget(logo_area)
+        logo_wrap = QHBoxLayout()
+        logo_wrap.setContentsMargins(16, 20, 16, 8)
+        logo_wrap.addWidget(logo_card, 1)
+        lay.addLayout(logo_wrap)
 
         # Nav buttons
         nav_area = QWidget()
@@ -1189,7 +1290,7 @@ class ControlPanel(QWidget):
         footer_lay.addWidget(sep)
 
         # Version
-        self._ver_label = QLabel("ABC v1.0.0")
+        self._ver_label = QLabel("ABC v0.1.0")
         self._ver_label.setStyleSheet(f"color:{_C['text3']};font-size:10px;background:transparent;border:none")
         footer_lay.addWidget(self._ver_label)
 
@@ -1204,8 +1305,7 @@ class ControlPanel(QWidget):
 
         # Show/hide text labels
         show = not self._sidebar_collapsed
-        for w in self._logo_text_widgets:
-            w.setVisible(show)
+        self._logo_card.setVisible(show)
         for w in self._api_row_widgets:
             w.setVisible(show)
         self._ver_label.setVisible(show)
@@ -1291,15 +1391,12 @@ class ControlPanel(QWidget):
         lay.addWidget(menu_btn)
 
         # Title + subtitle
-        title_area = QVBoxLayout()
-        title_area.setSpacing(0)
         self._page_title = QLabel("首页")
-        self._page_title.setStyleSheet(f"color:{_C['text']};font-size:14px;font-weight:700;background:transparent;border:none")
-        title_area.addWidget(self._page_title)
+        self._page_title.setStyleSheet(f"color:{_C['text']};font-size:18px;font-weight:800;background:transparent;border:none")
+        lay.addWidget(self._page_title)
         self._page_subtitle = QLabel(self._NAV_SUBTITLES[0])
-        self._page_subtitle.setStyleSheet(f"color:{_C['text3']};font-size:11px;background:transparent;border:none;margin-left:4px")
-        title_area.addWidget(self._page_subtitle)
-        lay.addLayout(title_area)
+        self._page_subtitle.setStyleSheet(f"color:{_C['text3']};font-size:12px;background:transparent;border:none")
+        lay.addWidget(self._page_subtitle)
 
         lay.addStretch()
 
@@ -1449,8 +1546,8 @@ class ControlPanel(QWidget):
         self._card_total = StatCard("弹幕总数", "0", _C["accent"], icon="💬")
         self._card_ai = StatCard("AI 生成", "0", _C["accent2"], icon="🤖", yellow=True)
         self._card_mock = StatCard("模拟弹幕", "0", _C["accent2"], icon="📋")
-        self._card_cache = StatCard("缓存命中", "0", _C["green"], icon="🗂", yellow=True)
-        for c in (self._card_total, self._card_ai, self._card_mock, self._card_cache):
+        self._card_pool = StatCard("缓存池弹幕", "0", _C["accent"], yellow=True)
+        for c in (self._card_total, self._card_ai, self._card_mock, self._card_pool):
             row1.addWidget(c)
         left_col.addLayout(row1)
 
@@ -1471,31 +1568,174 @@ class ControlPanel(QWidget):
 
         left_col.addStretch()
         home_layout.addLayout(left_col, 1)
-
-        # Right column
-        right_col = QVBoxLayout()
-        right_col.setSpacing(12)
-
-        self._realtime_panel = RealtimePanel()
-        self._realtime_panel.setFixedWidth(240)
-        self._realtime_panel.setMinimumHeight(220)
-        right_col.addWidget(self._realtime_panel)
-
-        self._activity_panel = ActivityPanel()
-        self._activity_panel.setFixedWidth(240)
-        self._activity_panel.setMinimumHeight(260)
-        right_col.addWidget(self._activity_panel, 1)
-
-        home_layout.addLayout(right_col)
         root_lay.addLayout(home_layout, 1)
 
         scroll.setWidget(page)
 
-        # Stats timer
+        # Stats timer — refresh every 1 second
         self._stats_timer = QTimer(self)
         self._stats_timer.timeout.connect(self._refresh_stats)
-        self._stats_timer.setInterval(2000)
+        self._stats_timer.setInterval(1000)
 
+        return scroll
+
+    # ── API Page ─────────────────────────────────────────────────────────
+
+    def _page_api(self) -> QWidget:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("QScrollArea{background:transparent;border:none}")
+
+        page = QWidget()
+        page.setStyleSheet(f"background:{_C['bg']}")
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(28, 24, 28, 24)
+        lay.setSpacing(14)
+
+        # Provider form card
+        form_card = SectionCard("提供商设置")
+        form_card._layout.setSpacing(10)
+
+        self._api_prov = NoScrollComboBox()
+        self._api_prov.setStyleSheet(_COMBO_STYLE)
+        for sp in SUPPORTED_PROVIDERS:
+            self._api_prov.addItem(sp.label, sp.key)
+        self._api_prov.currentIndexChanged.connect(self._on_api_page_prov)
+        form_card.add_row("提供商", self._api_prov)
+
+        self._api_url = QLineEdit()
+        self._api_url.setPlaceholderText("https://api.example.com/v1")
+        self._api_url.setStyleSheet(f"""
+            QLineEdit {{
+                background: rgba(159,130,253,0.06);
+                color: {_C['text']};
+                border: 1px solid {_C['border']};
+                border-radius: 8px;
+                padding: 7px 12px;
+                font-size: 13px;
+            }}
+            QLineEdit:focus {{ border-color: {_C['accent']}; }}
+        """)
+        form_card.add_row("Base URL", self._api_url)
+
+        self._api_mdl = NoScrollComboBox()
+        self._api_mdl.setStyleSheet(_COMBO_STYLE)
+        self._api_mdl.setEditable(True)
+        form_card.add_row("模型", self._api_mdl)
+
+        self._api_key = QLineEdit()
+        self._api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self._api_key.setPlaceholderText("Ollama / 自定义可留空")
+        self._api_key.setStyleSheet(f"""
+            QLineEdit {{
+                background: rgba(159,130,253,0.06);
+                color: {_C['text']};
+                border: 1px solid {_C['border']};
+                border-radius: 8px;
+                padding: 7px 12px;
+                font-size: 13px;
+            }}
+            QLineEdit:focus {{ border-color: {_C['accent']}; }}
+        """)
+        form_card.add_row("API Key", self._api_key)
+        lay.addWidget(form_card)
+
+        # Test + Save buttons
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
+
+        self._api_test_btn = QPushButton("测试连接")
+        self._api_test_btn.setFixedHeight(36)
+        self._api_test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._api_test_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(159,130,253,0.08);
+                color: {_C['text']};
+                border: 1px solid {_C['border']};
+                border-radius: 10px;
+                padding: 0 20px;
+                font-size: 13px;
+            }}
+            QPushButton:hover {{ border-color: {_C['accent']}; }}
+        """)
+        self._api_test_btn.clicked.connect(self._test_api_on_page)
+        btn_row.addWidget(self._api_test_btn)
+
+        self._api_save_btn = QPushButton("保存配置")
+        self._api_save_btn.setFixedHeight(36)
+        self._api_save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._api_save_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                    stop:0 {_C['accent']}, stop:1 {_C['accent2']});
+                color: #000;
+                border: none;
+                border-radius: 10px;
+                padding: 0 20px;
+                font-size: 13px;
+                font-weight: 700;
+            }}
+        """)
+        self._api_save_btn.clicked.connect(self._save_api_on_page)
+        btn_row.addWidget(self._api_save_btn)
+
+        self._api_page_status = QLabel("")
+        self._api_page_status.setStyleSheet(f"color:{_C['text3']};font-size:12px;background:transparent;border:none")
+        btn_row.addWidget(self._api_page_status, 1)
+        lay.addLayout(btn_row)
+
+        # History
+        hist_card = SectionCard("历史配置")
+        self._api_hist = QListWidget()
+        self._api_hist.setMaximumHeight(140)
+        self._api_hist.setStyleSheet(f"""
+            QListWidget {{
+                background: rgba(159,130,253,0.04);
+                border: 1px solid {_C['border']};
+                border-radius: 10px;
+                padding: 6px;
+                font-size: 12px;
+                color: {_C['text2']};
+            }}
+            QListWidget::item {{
+                padding: 6px 10px;
+                border-radius: 6px;
+            }}
+            QListWidget::item:selected {{
+                background: rgba(159,130,253,0.15);
+                color: {_C['text']};
+            }}
+        """)
+        self._api_hist.itemDoubleClicked.connect(self._load_history_on_page)
+        hist_card.add_widget(self._api_hist)
+
+        del_row = QHBoxLayout()
+        del_btn = QPushButton("删除选中")
+        del_btn.setFixedSize(72, 26)
+        del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        del_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {_C['text3']};
+                border: 1px solid {_C['border']};
+                border-radius: 8px;
+                font-size: 11px;
+            }}
+            QPushButton:hover {{ color: {_C['red']}; border-color: {_C['red']}40; }}
+        """)
+        del_btn.clicked.connect(self._delete_history_on_page)
+        del_row.addStretch()
+        del_row.addWidget(del_btn)
+        hist_card.add_layout(del_row)
+        lay.addWidget(hist_card)
+
+        lay.addStretch()
+        scroll.setWidget(page)
+
+        # Load current settings
+        self._load_api_page()
+        self._refresh_api_page_history()
         return scroll
 
     # ── Settings Page ────────────────────────────────────────────────────
@@ -1512,55 +1752,54 @@ class ControlPanel(QWidget):
         lay.setContentsMargins(28, 24, 28, 24)
         lay.setSpacing(16)
 
-        title = QLabel("设置")
-        title.setStyleSheet(f"color:{_C['text']};font-size:20px;font-weight:700;background:transparent;border:none")
-        lay.addWidget(title)
-
-        subtitle = QLabel("自定义弹幕行为、显示效果与 API 连接")
-        subtitle.setStyleSheet(f"color:{_C['text3']};font-size:12px;background:transparent;border:none;margin-bottom:8px")
-        lay.addWidget(subtitle)
-
-        # Barrage
+        # Barrage settings (merged: density, display, speed, opacity)
         card1 = SectionCard("💬 弹幕设置")
-        self._density = QComboBox()
+        self._density = NoScrollComboBox()
+        self._density.setStyleSheet(_COMBO_STYLE)
         for label, val in [("低", "low"), ("中", "medium"), ("高", "high")]:
             self._density.addItem(label, val)
         self._density.currentTextChanged.connect(lambda: self.densityChanged.emit(self._density.currentData()))
         card1.add_row("弹幕密度", self._density)
+
+        # Helper: label | slider | value
+        def _slider_row(label_text: str, slider: QWidget, val_widget: QLabel) -> QHBoxLayout:
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            lbl = QLabel(label_text)
+            lbl.setFixedWidth(64)
+            lbl.setStyleSheet(f"color:{_C['text2']};font-size:12px;font-weight:500;background:transparent;border:none")
+            row.addWidget(lbl)
+            row.addWidget(slider, 1)
+            row.addWidget(val_widget)
+            return row
+
+        self._display_area = TickedSlider(_DISPLAY_AREA_LABELS)
+        self._display_area.valueChanged.connect(lambda v: self.displayAreaChanged.emit(_DISPLAY_AREA_VALUES[v]))
+        card1.add_layout(_slider_row("显示区域", self._display_area, self._display_area.value_label()))
+
+        self._font_size = TickedSlider(_FONT_SIZE_LABELS)
+        self._font_size.valueChanged.connect(lambda v: self.fontSizeChanged.emit(_FONT_SIZE_PX[v]))
+        card1.add_layout(_slider_row("字体大小", self._font_size, self._font_size.value_label()))
+
+        self._opacity_slider = NoScrollSlider(Qt.Orientation.Horizontal)
+        self._opacity_slider.setRange(0, 100)
+        self._opacity_slider.setValue(100)
+        self._opacity_slider.setStyleSheet(_STEP_SLIDER_STYLE)
+        self._opacity_val = QLabel("100%")
+        self._opacity_val.setFixedWidth(40)
+        self._opacity_val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._opacity_val.setStyleSheet(f"color:{_C['text']};font-size:12px;font-weight:600;background:transparent;border:none")
+        self._opacity_slider.valueChanged.connect(lambda v: (
+            self._opacity_val.setText(f"{v}%"), self.opacityChanged.emit(v)))
+        card1.add_layout(_slider_row("不透明度", self._opacity_slider, self._opacity_val))
+
+        self._speed = TickedSlider(_SPEED_LABELS)
+        self._speed.valueChanged.connect(self.speedChanged.emit)
+        card1.add_layout(_slider_row("移动速度", self._speed, self._speed.value_label()))
+
         self._mock_ck = ModernToggle("无 API Key 时使用模拟弹幕")
         card1.add_widget(self._mock_ck)
         lay.addWidget(card1)
-
-        # Display
-        card2 = SectionCard("🖥 显示设置")
-        da_row = QHBoxLayout()
-        da_row.setSpacing(10)
-        self._display_area = QSlider(Qt.Orientation.Horizontal)
-        self._display_area.setRange(0, 100)
-        self._display_area.valueChanged.connect(self.displayAreaChanged.emit)
-        self._da_val = QLabel("65%")
-        self._da_val.setFixedWidth(36)
-        self._da_val.setStyleSheet(f"color:{_C['text2']};font-size:12px;background:transparent;border:none")
-        self._display_area.valueChanged.connect(lambda v: self._da_val.setText(f"{v}%"))
-        da_row.addWidget(self._display_area, 1)
-        da_row.addWidget(self._da_val)
-        card2.add_row("显示区域", self._da_val)
-        card2.add_layout(da_row)
-
-        fs_row = QHBoxLayout()
-        fs_row.setSpacing(10)
-        self._font_size = QSlider(Qt.Orientation.Horizontal)
-        self._font_size.setRange(12, 48)
-        self._font_size.valueChanged.connect(self.fontSizeChanged.emit)
-        self._fs_val = QLabel("18px")
-        self._fs_val.setFixedWidth(36)
-        self._fs_val.setStyleSheet(f"color:{_C['text2']};font-size:12px;background:transparent;border:none")
-        self._font_size.valueChanged.connect(lambda v: self._fs_val.setText(f"{v}px"))
-        fs_row.addWidget(self._font_size, 1)
-        fs_row.addWidget(self._fs_val)
-        card2.add_row("字体大小", self._fs_val)
-        card2.add_layout(fs_row)
-        lay.addWidget(card2)
 
         # Screen
         card3 = SectionCard("🔍 屏幕感知")
@@ -1572,44 +1811,65 @@ class ControlPanel(QWidget):
         card3.add_widget(self._vision_ck)
         lay.addWidget(card3)
 
-        # API
+        # API (shortcut to dedicated page)
         card4 = SectionCard("🔗 API 配置")
-        self._api_btn = QPushButton("配置 API 提供商")
-        self._api_btn.setFixedHeight(36)
-        self._api_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._api_btn.setStyleSheet(f"""
+        api_row = QHBoxLayout()
+        api_row.setSpacing(10)
+        self._api_summary = QLabel("未配置 — 将使用模拟弹幕")
+        self._api_summary.setStyleSheet(f"color:{_C['text3']};font-size:12px;background:transparent;border:none")
+        api_row.addWidget(self._api_summary, 1)
+        api_btn = QPushButton("配置 →")
+        api_btn.setFixedSize(72, 28)
+        api_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        api_btn.setStyleSheet(f"""
             QPushButton {{
                 background: rgba(159,130,253,0.06);
-                color: {_C['text']};
+                color: {_C['accent']};
                 border: 1px solid {_C['border']};
-                border-radius: 10px;
-                padding: 0 18px;
-                font-size: 13px;
+                border-radius: 8px;
+                font-size: 11px;
             }}
             QPushButton:hover {{ border-color: {_C['accent']}; }}
         """)
-        self._api_btn.clicked.connect(self._open_api_dialog)
-        card4.add_widget(self._api_btn)
-        self._api_summary = QLabel("未配置 — 将使用模拟弹幕")
-        self._api_summary.setStyleSheet(f"color:{_C['text3']};font-size:12px;background:transparent;border:none")
-        card4.add_widget(self._api_summary)
+        api_btn.clicked.connect(lambda: self._switch_page(1))
+        api_row.addWidget(api_btn)
+        card4.add_layout(api_row)
         lay.addWidget(card4)
 
         # Advanced
         card5 = SectionCard("⚙ 高级设置")
-        self._privacy = QComboBox()
+        adv_row = QHBoxLayout()
+        adv_row.setSpacing(16)
+
+        def _adv_item(label_text: str, widget: QWidget) -> QVBoxLayout:
+            col = QVBoxLayout()
+            col.setSpacing(4)
+            lbl = QLabel(label_text)
+            lbl.setStyleSheet(f"color:{_C['text3']};font-size:11px;background:transparent;border:none")
+            col.addWidget(lbl)
+            col.addWidget(widget)
+            return col
+
+        self._privacy = NoScrollComboBox()
+        self._privacy.setStyleSheet(_COMBO_STYLE)
         for label, val in [("严格", "strict"), ("均衡", "balanced")]:
             self._privacy.addItem(label, val)
-        card5.add_row("隐私模式", self._privacy)
-        self._cost = QComboBox()
+        adv_row.addLayout(_adv_item("隐私模式", self._privacy))
+
+        self._cost = NoScrollComboBox()
+        self._cost.setStyleSheet(_COMBO_STYLE)
         for label, val in [("沉浸", "immersive"), ("均衡", "balanced"), ("节省", "saving")]:
             self._cost.addItem(label, val)
-        card5.add_row("成本模式", self._cost)
+        adv_row.addLayout(_adv_item("成本模式", self._cost))
+
         self._cap_int = QDoubleSpinBox()
         self._cap_int.setRange(0.5, 30)
         self._cap_int.setSingleStep(0.5)
         self._cap_int.setSuffix(" 秒")
-        card5.add_row("截屏间隔", self._cap_int)
+        self._cap_int.setFixedWidth(100)
+        adv_row.addLayout(_adv_item("截屏间隔", self._cap_int))
+
+        card5.add_layout(adv_row)
         lay.addWidget(card5)
 
         lay.addStretch()
@@ -1625,13 +1885,6 @@ class ControlPanel(QWidget):
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(12)
 
-        title = QLabel("日志")
-        title.setStyleSheet(f"color:{_C['text']};font-size:20px;font-weight:700;background:transparent;border:none")
-        lay.addWidget(title)
-
-        subtitle = QLabel("实时监控系统运行状态、OCR 识别结果与 API 调用记录")
-        subtitle.setStyleSheet(f"color:{_C['text3']};font-size:12px;background:transparent;border:none;margin-bottom:8px")
-        lay.addWidget(subtitle)
 
         tab_bar = QHBoxLayout()
         tab_bar.setSpacing(4)
@@ -1724,6 +1977,7 @@ class ControlPanel(QWidget):
     def _page_about(self) -> QWidget:
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setStyleSheet("QScrollArea{background:transparent;border:none}")
 
@@ -1731,15 +1985,8 @@ class ControlPanel(QWidget):
         page.setStyleSheet(f"background:{_C['bg']}")
         lay = QVBoxLayout(page)
         lay.setContentsMargins(28, 24, 28, 24)
-        lay.setSpacing(16)
+        lay.setSpacing(14)
 
-        title = QLabel("关于")
-        title.setStyleSheet(f"color:{_C['text']};font-size:20px;font-weight:700;background:transparent;border:none")
-        lay.addWidget(title)
-
-        subtitle = QLabel("AI Barrage Companion · AI 驱动的虚拟弹幕陪伴")
-        subtitle.setStyleSheet(f"color:{_C['text3']};font-size:12px;background:transparent;border:none;margin-bottom:8px")
-        lay.addWidget(subtitle)
 
         # Hero
         hero = QFrame()
@@ -1751,111 +1998,55 @@ class ControlPanel(QWidget):
             }}
         """)
         hl = QVBoxLayout(hero)
-        hl.setContentsMargins(24, 24, 24, 24)
-        hl.setSpacing(8)
+        hl.setContentsMargins(24, 20, 24, 20)
+        hl.setSpacing(6)
 
         t = QLabel("AI Barrage Companion")
         t.setStyleSheet(f"color:{_C['text']};font-size:20px;font-weight:800;background:transparent;border:none")
         hl.addWidget(t)
 
-        v = QLabel("版本 1.0.0  ·  MIT License")
+        v = QLabel("版本 0.1.0  ·  GPL-3.0 License")
         v.setStyleSheet(f"color:{_C['text3']};font-size:12px;background:transparent;border:none")
         hl.addWidget(v)
 
-        d = QLabel('通过截屏分析屏幕活动(游戏、编程、看视频)，利用 AI 生成符合场景的直播弹幕评论，在透明悬浮层上滚动显示。模拟"有人在看、有人在吐槽、有人在陪伴"的直播氛围。')
+        d = QLabel("通过截屏分析屏幕活动（游戏、编程、看视频），利用 AI 生成符合场景的直播弹幕评论，在透明悬浮层上滚动显示。")
         d.setWordWrap(True)
-        d.setStyleSheet(f"color:{_C['text2']};font-size:12px;background:transparent;border:none;line-height:1.6")
+        d.setStyleSheet(f"color:{_C['text2']};font-size:12px;background:transparent;border:none;line-height:1.5")
         hl.addWidget(d)
         lay.addWidget(hero)
 
-        # Grid: 2 columns
-        grid = QHBoxLayout()
-        grid.setSpacing(16)
+        # Info cards — stacked vertically (no horizontal overflow)
+        def _make_tag_text(items: list[str]) -> str:
+            return "  ·  ".join(items)
 
-        # Left column
-        left_col = QVBoxLayout()
-        left_col.setSpacing(16)
-
-        # Personas
         pc = SectionCard("🎭 内置人格")
-        persona_tags = QWidget()
-        persona_tags.setStyleSheet("background:transparent;border:none")
-        pt_lay = QHBoxLayout(persona_tags)
-        pt_lay.setSpacing(6)
-        pt_lay.setContentsMargins(0, 4, 0, 0)
-        for name, desc in [("杠精", "爱挑刺"), ("暖场", "鼓励加油"), ("吐槽", "冷幽默"), ("跟风", "复读"), ("整活", "造梗")]:
-            tag = QLabel(f"{name} · {desc}")
-            tag.setStyleSheet(f"""
-                padding: 4px 10px; border-radius: 6px; font-size: 11px;
-                border: 1px solid {_C['border']}; color: {_C['text2']};
-                background: rgba(159,130,253,0.04);
-            """)
-            pt_lay.addWidget(tag)
-        pt_lay.addStretch()
-        pc.add_widget(persona_tags)
-        left_col.addWidget(pc)
+        pt = QLabel(_make_tag_text(["杠精·爱挑刺", "暖场·鼓励加油", "吐槽·冷幽默", "跟风·复读", "整活·造梗"]))
+        pt.setWordWrap(True)
+        pt.setStyleSheet(f"color:{_C['text2']};font-size:12px;background:transparent;border:none;line-height:1.6")
+        pc.add_widget(pt)
+        lay.addWidget(pc)
 
-        # Tech stack
         tc = SectionCard("🔧 技术栈")
-        tech_tags = QWidget()
-        tech_tags.setStyleSheet("background:transparent;border:none")
-        tt_lay = QHBoxLayout(tech_tags)
-        tt_lay.setSpacing(6)
-        tt_lay.setContentsMargins(0, 4, 0, 0)
-        for tech in ["Python 3.9+", "PySide6 (Qt)", "mss 截屏", "httpx", "Pillow", "pytesseract"]:
-            tag = QLabel(tech)
-            tag.setStyleSheet(f"""
-                padding: 4px 10px; border-radius: 6px; font-size: 11px;
-                border: 1px solid {_C['border']}; color: {_C['text2']};
-                background: rgba(159,130,253,0.04);
-            """)
-            tt_lay.addWidget(tag)
-        tt_lay.addStretch()
-        tc.add_widget(tech_tags)
-        left_col.addWidget(tc)
+        tt = QLabel(_make_tag_text(["Python 3.9+", "PySide6 (Qt)", "mss 截屏", "httpx", "Pillow", "pytesseract"]))
+        tt.setWordWrap(True)
+        tt.setStyleSheet(f"color:{_C['text2']};font-size:12px;background:transparent;border:none;line-height:1.6")
+        tc.add_widget(tt)
+        lay.addWidget(tc)
 
-        left_col.addStretch()
-        grid.addLayout(left_col, 1)
-
-        # Right column
-        right_col = QVBoxLayout()
-        right_col.setSpacing(16)
-
-        # Providers
         prc = SectionCard("🧠 AI 供应商")
-        prov_tags = QWidget()
-        prov_tags.setStyleSheet("background:transparent;border:none")
-        prov_lay = QHBoxLayout(prov_tags)
-        prov_lay.setSpacing(6)
-        prov_lay.setContentsMargins(0, 4, 0, 0)
-        for p_name in ["OpenAI", "DeepSeek", "Qwen", "Kimi", "GLM", "SiliconFlow", "OpenRouter", "MiMo", "Ollama"]:
-            tag = QLabel(p_name)
-            tag.setStyleSheet(f"""
-                padding: 4px 10px; border-radius: 6px; font-size: 11px;
-                border: 1px solid {_C['border']}; color: {_C['text2']};
-                background: rgba(159,130,253,0.04);
-            """)
-            prov_lay.addWidget(tag)
-        prov_lay.addStretch()
-        prc.add_widget(prov_tags)
-        right_col.addWidget(prc)
+        pv = QLabel(_make_tag_text(["OpenAI", "DeepSeek", "Qwen", "Kimi", "GLM", "SiliconFlow", "OpenRouter", "MiMo", "Ollama"]))
+        pv.setWordWrap(True)
+        pv.setStyleSheet(f"color:{_C['text2']};font-size:12px;background:transparent;border:none;line-height:1.6")
+        prc.add_widget(pv)
+        lay.addWidget(prc)
 
-        # Credits
-        cr = SectionCard("📄 开源致谢")
-        ct = QLabel("弹幕语料库来源于 DanmuAI 项目 (GPL-3.0)\nDDmkTCCorpus (Apache-2.0)")
-        ct.setWordWrap(True)
-        ct.setStyleSheet(f"color:{_C['text3']};font-size:12px;background:transparent;border:none")
-        cr.add_widget(ct)
+        cr = SectionCard("📄 开源地址")
         gh = QLabel(f'<a href="https://github.com/Riordon666/AI-Barrage-Companion" style="color:{_C["accent"]};font-size:12px;text-decoration:none">GitHub →</a>')
         gh.setOpenExternalLinks(True)
-        gh.setStyleSheet("background:transparent;border:none;margin-top:8px")
+        gh.setStyleSheet("background:transparent;border:none;margin-top:6px")
         cr.add_widget(gh)
-        right_col.addWidget(cr)
+        lay.addWidget(cr)
 
-        right_col.addStretch()
-        grid.addLayout(right_col, 1)
-
-        lay.addLayout(grid)
         lay.addStretch()
         scroll.setWidget(page)
         return scroll
@@ -1870,7 +2061,6 @@ class ControlPanel(QWidget):
         self._card_total.set_value(str(st["barrages_sent"]))
         self._card_ai.set_value(str(st["barrages_ai"]))
         self._card_mock.set_value(str(st["barrages_mock"]))
-        self._card_cache.set_value(str(st["barrages_cache"]))
         self._card_captures.set_value(str(st["captures"]))
         self._card_tokens.set_value(str(st['tokens_approx_in'] + st['tokens_approx_out']))
 
@@ -1879,10 +2069,13 @@ class ControlPanel(QWidget):
         m, sec = divmod(rem, 60)
         self._card_uptime.set_value(f"{h}h {m}m {sec}s" if h > 0 else f"{m}m {sec}s")
 
-        # API response time
-        avg_resp = st.get("avg_response_time", 0)
-        if avg_resp > 0:
-            self._card_resp.set_value(f"{avg_resp:.2f}s")
+        # API response time (from real latency measurement)
+        # API response time: show EMA-smoothed average
+        if getattr(ctrl, '_latency_ema_s', 0) > 0:
+            self._card_resp.set_value(f"{ctrl._latency_ema_s:.1f}s")
+
+        # Cache pool count
+        self._card_pool.set_value(str(getattr(ctrl, '_ai_buf_count', 0)))
 
         # API status card
         a = self._settings.api
@@ -1891,39 +2084,19 @@ class ControlPanel(QWidget):
             calls = str(st.get("api_calls", 0))
             total_req = st.get("api_calls", 0) + st.get("api_failures", 0)
             success = f"{(st.get('api_calls', 0) / max(total_req, 1) * 100):.1f}%" if total_req > 0 else "—"
-            resp = f"{avg_resp:.2f}s" if avg_resp > 0 else "—"
+            resp = f"{ctrl._latency_ema_s:.1f}s" if getattr(ctrl, '_latency_ema_s', 0) > 0 else "—"
             self._api_card.set_info(a.provider, a.model, a.base_url, online,
                                      resp_time=resp, call_count=calls, success_rate=success)
             self._sidebar_api_name.setText(f"{a.provider} · {a.model}"[:30])
             self._sidebar_dot.set_color(_C["green"] if online else _C["red"])
             self._status_dot.set_color(_C["green"] if online else _C["red"])
             self._bottom_dot.set_color(_C["green"] if online else _C["red"])
-
-            # Right panel
-            try:
-                import psutil
-                proc = psutil.Process()
-                mem_mb = proc.memory_info().rss // (1024 * 1024)
-                cpu_pct = int(proc.cpu_percent(interval=0) or 1)
-            except Exception:
-                mem_mb = 128
-                cpu_pct = 6
-            self._realtime_panel.update_status(
-                f"{a.provider} {a.model[:15]}", online,
-                resp if resp != "—" else "1.26s",
-                str(random.randint(1, 3)),
-                mem_mb, cpu_pct
-            )
         else:
             self._api_card.set_info("未配置", "", "将使用模拟弹幕", False)
             self._sidebar_api_name.setText("未配置")
             self._sidebar_dot.set_color(_C["text3"])
             self._status_dot.set_color(_C["text3"])
             self._bottom_dot.set_color(_C["text3"])
-            self._realtime_panel.update_status("未配置", False, "—", "0", 0, 0)
-
-        # Activity panel
-        self._activity_panel.set_items(self._activity_items[:10])
 
     def _add_activity(self, color: str, desc: str, extra: str = "") -> None:
         ts = time.strftime("%H:%M:%S")
@@ -1942,27 +2115,128 @@ class ControlPanel(QWidget):
         logger.info("弹幕%s", "暂停" if paused else "继续")
 
     def _open_api_dialog(self) -> None:
-        dlg = ApiConfigDialog(self._settings.api, list(self._settings.api_history), self)
-        dlg.saved.connect(self._on_api_saved)
-        dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
-        self._api_dialog = dlg
-        dlg.show()
-
-    def _on_api_saved(self, config: ApiConfig, history: list[ApiConfig]) -> None:
-        self._settings.api = config
-        self._settings.api_history = history
-        self._refresh_api_summary()
-        self.set_status(f"API: {config.provider} · {config.model}", "success")
-        self._save_settings()
+        self._switch_page(1)  # Navigate to API page
 
     def _refresh_api_summary(self) -> None:
         a = self._settings.api
         if a and a.provider:
-            self._api_summary.setText(f"{a.provider} · {a.model}\n{a.base_url}")
+            self._api_summary.setText(f"{a.provider} · {a.model}")
             self._api_summary.setStyleSheet(f"color:{_C['green']};font-size:12px;background:transparent;border:none")
         else:
             self._api_summary.setText("未配置 — 将使用模拟弹幕")
             self._api_summary.setStyleSheet(f"color:{_C['text3']};font-size:12px;background:transparent;border:none")
+
+    # ── API page helpers ───────────────────────────────────────────────
+
+    def _load_api_page(self) -> None:
+        a = self._settings.api
+        if a is None:
+            self._api_prov.setCurrentIndex(self._api_prov.findData("custom"))
+            return
+        idx = self._api_prov.findData(a.provider)
+        if idx >= 0:
+            self._api_prov.setCurrentIndex(idx)
+        self._api_url.setText(a.base_url)
+        self._api_mdl.setCurrentText(a.model)
+        self._api_key.setText(a.api_key or "")
+
+    def _on_api_page_prov(self) -> None:
+        key = self._api_prov.currentData()
+        preset = provider_for_key(key)
+        if preset.base_url:
+            self._api_url.setText(preset.base_url)
+        self._api_mdl.clear()
+        if preset.models:
+            self._api_mdl.addItems(list(preset.models))
+        self._api_key.setEnabled(preset.requires_api_key)
+        if not preset.requires_api_key:
+            self._api_key.setText("")
+
+    def _test_api_on_page(self) -> None:
+        c = ApiConfig(
+            provider=self._api_prov.currentData(),
+            base_url=self._api_url.text().strip(),
+            model=self._api_mdl.currentText().strip(),
+            api_key=self._api_key.text().strip(),
+        )
+        self._api_test_btn.setText("测试中…")
+        self._api_test_btn.setEnabled(False)
+        self._api_page_status.setText("")
+
+        def _do_test() -> tuple[bool, str]:
+            import httpx
+            try:
+                preset = provider_for_key(c.provider)
+                if preset.protocol == "anthropic":
+                    url = c.base_url.rstrip("/") + "/messages"
+                    payload: dict = {"model": c.model or "claude-sonnet-4-20250514", "max_tokens": 1, "messages": [{"role": "user", "content": "Hi"}]}
+                    headers = {"x-api-key": c.api_key, "Content-Type": "application/json", "anthropic-version": "2023-06-01"}
+                else:
+                    url = c.base_url.rstrip("/") + "/chat/completions"
+                    payload = {"model": c.model or "gpt-4o-mini", "messages": [{"role": "user", "content": "Hi"}], "max_tokens": 1}
+                    headers = {"Authorization": f"Bearer {c.api_key}", "Content-Type": "application/json"}
+                r = httpx.post(url, json=payload, headers=headers, timeout=15)
+                if r.status_code == 200:
+                    return True, "连接成功"
+                return False, f"HTTP {r.status_code}"
+            except Exception as exc:
+                return False, str(exc)
+
+        executor = ThreadPoolExecutor(max_workers=1)
+        def _on_done(fut):
+            ok, msg = fut.result()
+            self._api_test_btn.setText("测试连接")
+            self._api_test_btn.setEnabled(True)
+            if ok:
+                self._api_page_status.setText("✓ " + msg)
+                self._api_page_status.setStyleSheet(f"color:{_C['green']};font-size:12px;background:transparent;border:none")
+            else:
+                self._api_page_status.setText("✗ " + msg)
+                self._api_page_status.setStyleSheet(f"color:{_C['red']};font-size:12px;background:transparent;border:none")
+        fut = executor.submit(_do_test)
+        fut.add_done_callback(_on_done)
+
+    def _save_api_on_page(self) -> None:
+        c = ApiConfig(
+            provider=self._api_prov.currentData(),
+            base_url=self._api_url.text().strip(),
+            model=self._api_mdl.currentText().strip(),
+            api_key=self._api_key.text().strip(),
+        )
+        self._settings.api = c
+        # Update history
+        history = [h for h in self._settings.api_history
+                   if not (h.provider == c.provider and h.base_url == c.base_url and h.model == c.model)]
+        history.insert(0, c)
+        if len(history) > 10:
+            history = history[:10]
+        self._settings.api_history = history
+        self._refresh_api_summary()
+        self._refresh_api_page_history()
+        self.set_status(f"API: {c.provider} · {c.model}", "success")
+        self._save_settings()
+
+    def _refresh_api_page_history(self) -> None:
+        self._api_hist.clear()
+        for h in self._settings.api_history:
+            self._api_hist.addItem(f"{h.provider}  |  {h.model}  |  {h.base_url}")
+
+    def _load_history_on_page(self) -> None:
+        idx = self._api_hist.currentRow()
+        if 0 <= idx < len(self._settings.api_history):
+            h = self._settings.api_history[idx]
+            pi = self._api_prov.findData(h.provider)
+            if pi >= 0:
+                self._api_prov.setCurrentIndex(pi)
+            self._api_url.setText(h.base_url)
+            self._api_mdl.setCurrentText(h.model)
+            self._api_key.setText(h.api_key or "")
+
+    def _delete_history_on_page(self) -> None:
+        idx = self._api_hist.currentRow()
+        if 0 <= idx < len(self._settings.api_history):
+            del self._settings.api_history[idx]
+            self._refresh_api_page_history()
 
     def _save_settings(self) -> None:
         self._settings.density = as_density(self._density.currentData())
@@ -1973,8 +2247,11 @@ class ControlPanel(QWidget):
         self._settings.privacy_mode = self._privacy.currentData()  # type:ignore[assignment]
         self._settings.cost_mode = self._cost.currentData()  # type:ignore[assignment]
         self._settings.capture_interval_seconds = self._cap_int.value()
-        self._settings.display_area_percent = self._display_area.value()
-        self._settings.barrage_font_size = self._font_size.value()
+        self._settings.display_area_percent = _DISPLAY_AREA_VALUES[self._display_area.value()]
+        self._settings.font_size_level = self._font_size.value()
+        self._settings.barrage_font_size = _FONT_SIZE_PX[self._font_size.value()]
+        self._settings.opacity_percent = self._opacity_slider.value()
+        self._settings.speed_level = self._speed.value()
         self.settingsSaved.emit(self._settings)
 
         # Save button feedback
@@ -2011,8 +2288,18 @@ class ControlPanel(QWidget):
         idx = self._density.findData(s.density)
         if idx >= 0:
             self._density.setCurrentIndex(idx)
-        self._display_area.setValue(s.display_area_percent)
-        self._font_size.setValue(s.barrage_font_size)
+        # Map display_area_percent to nearest tick index
+        da_idx = min(range(len(_DISPLAY_AREA_VALUES)),
+                     key=lambda i: abs(_DISPLAY_AREA_VALUES[i] - s.display_area_percent))
+        self._display_area.setValue(da_idx)
+        # Map font_size to nearest tick index
+        fs_idx = min(range(len(_FONT_SIZE_PX)),
+                     key=lambda i: abs(_FONT_SIZE_PX[i] - s.barrage_font_size))
+        if hasattr(s, 'font_size_level'):
+            fs_idx = s.font_size_level
+        self._font_size.setValue(fs_idx)
+        self._opacity_slider.setValue(getattr(s, 'opacity_percent', 100))
+        self._speed.setValue(getattr(s, 'speed_level', 2))
         self._mock_ck.setChecked(s.use_mock_when_api_missing)
         self._vision_ck.setChecked(s.enable_vision)
         self._ocr_ck.setChecked(s.enable_ocr)
@@ -2057,6 +2344,10 @@ class ControlPanel(QWidget):
     def append_api_log(self, msg: str) -> None:
         self._log_pages[2].appendPlainText(f"{time.strftime('%H:%M:%S')} | {msg}\n")
 
+    def add_activity_items(self, items: list[tuple[str, str]]) -> None:
+        """Receive AI-generated barrages (activity panel removed, no-op)."""
+        pass
+
     # ── Global Styles ────────────────────────────────────────────────────
 
     def _apply_global(self) -> None:
@@ -2079,11 +2370,11 @@ class ControlPanel(QWidget):
             QComboBox:focus {{ border-color: {_C['accent']}; }}
             QComboBox::drop-down {{ border: none; padding-right: 8px; }}
             QComboBox QAbstractItemView {{
-                background: {_C['surface']};
+                background: #f8f7fc;
                 color: {_C['text']};
                 border: 1px solid {_C['border']};
                 border-radius: 10px;
-                selection-background-color: {_C['surface2']};
+                selection-background-color: rgba(159,130,253,0.18);
                 padding: 4px;
             }}
             QSpinBox, QDoubleSpinBox {{
@@ -2096,6 +2387,39 @@ class ControlPanel(QWidget):
                 min-height: 20px;
             }}
             QSpinBox:focus, QDoubleSpinBox:focus {{ border-color: {_C['accent']}; }}
+            QSpinBox::up-button, QDoubleSpinBox::up-button {{
+                subcontrol-origin: border;
+                subcontrol-position: top right;
+                border: none;
+                border-left: 1px solid {_C['border']};
+                border-bottom: 1px solid {_C['border']};
+                border-radius: 0 10px 0 0;
+                background: rgba(159,130,253,0.06);
+                width: 22px;
+                height: 14px;
+            }}
+            QSpinBox::down-button, QDoubleSpinBox::down-button {{
+                subcontrol-origin: border;
+                subcontrol-position: bottom right;
+                border: none;
+                border-left: 1px solid {_C['border']};
+                border-radius: 0 0 10px 0;
+                background: rgba(159,130,253,0.06);
+                width: 22px;
+                height: 14px;
+            }}
+            QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
+                width: 10px;
+                height: 6px;
+            }}
+            QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
+                width: 10px;
+                height: 6px;
+            }}
+            QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+            QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
+                background: rgba(159,130,253,0.15);
+            }}
             QSlider::groove:horizontal {{
                 height: 4px;
                 background: rgba(159,130,253,0.15);

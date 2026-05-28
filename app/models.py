@@ -54,8 +54,11 @@ class AppSettings:
     enable_ocr: bool = False
     enable_window_title: bool = False
     enable_vision: bool = False
-    display_area_percent: int = 65
-    barrage_font_size: int = 18
+    display_area_percent: int = 60
+    barrage_font_size: int = 24
+    font_size_level: int = 2
+    opacity_percent: int = 100
+    speed_level: int = 2
 
 
 @dataclass

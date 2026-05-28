@@ -211,6 +211,11 @@ class OpenAICompatibleBarrageService:
             ],
             "temperature": 0.8,
         }
+
+        # MiMo requires thinking:disabled — otherwise returns empty reasoning_content
+        if "api.xiaomimimo.com" in url:
+            payload["thinking"] = {"type": "disabled"}
+
         headers = {"Content-Type": "application/json"}
         if self._api_config.api_key:
             headers["Authorization"] = f"Bearer {self._api_config.api_key}"
@@ -321,6 +326,8 @@ class OpenAICompatibleBarrageService:
         base = (
             "你是直播间观众，只输出 JSON 数组。"
             "每条弹幕 1 到 12 个中文字符，不要脏话、人身攻击或隐私内容。"
+            "生成的弹幕要有不同人格的多样性，避免重复或相似的表达。"
+            "直接输出 JSON 数组，不要任何额外文字。"
         )
         if request.image_base64:
             base += (

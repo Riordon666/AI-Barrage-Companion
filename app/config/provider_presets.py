@@ -76,9 +76,9 @@ SUPPORTED_PROVIDERS: tuple[ProviderPreset, ...] = (
     ProviderPreset(
         key="mimo",
         label="小米 MiMo",
-        base_url="https://token-plan-cn.xiaomimimo.com/anthropic",
-        models=("mimo-v2.5-pro", "mimo-v2-flash"),
-        protocol="anthropic",
+        base_url="https://api.xiaomimimo.com/v1",
+        models=("mimo-v2.5", "mimo-v2-omni"),
+        protocol="openai",
     ),
     ProviderPreset(
         key="custom",

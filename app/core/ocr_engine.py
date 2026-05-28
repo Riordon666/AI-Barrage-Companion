@@ -19,7 +19,7 @@ from app.models import CapturedFrame
 
 logger = logging.getLogger("abc.ocr")
 
-_MAX_OCR_CHARS = 300  # safety cap per frame
+_MAX_OCR_CHARS = 800  # per-frame cap
 
 
 # ---------------------------------------------------------------------------
@@ -81,10 +81,31 @@ class OcrResult:
     message: str
 
 
+def _get_bundled_dir() -> str:
+    """Return the directory containing bundled tesseract.exe and tessdata/.
+
+    When packaged with PyInstaller, sys._MEIPASS is the temp extraction dir.
+    In dev mode, falls back to a ``tesseract/`` folder next to the project root.
+    """
+    import os
+    import sys
+
+    if getattr(sys, "frozen", False):
+        return os.path.join(sys._MEIPASS, "tesseract")  # type: ignore[union-attr]
+
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    return os.path.join(project_root, "tesseract")
+
+
 def _find_tesseract_cmd() -> str | None:
     """Try to locate tesseract.exe on Windows."""
     import shutil
     import os
+
+    # 0) Bundled copy (PyInstaller / dev tesseract folder)
+    bundled = os.path.join(_get_bundled_dir(), "tesseract.exe")
+    if os.path.isfile(bundled):
+        return bundled
 
     # 1) Already on PATH?
     found = shutil.which("tesseract")
@@ -130,10 +151,17 @@ def _check_tesseract() -> tuple[bool, str]:
         return False, message
 
     # Auto-locate tesseract executable
+    import os
+
     cmd = _find_tesseract_cmd()
     if cmd:
         pytesseract.pytesseract.tesseract_cmd = cmd
         logger.info("Tesseract 路径: %s", cmd)
+        # Windows Tesseract (UB-Mannheim) treats TESSDATA_PREFIX as the
+        # tessdata directory itself, not its parent
+        tessdata = os.path.join(os.path.dirname(cmd), "tessdata")
+        if os.path.isdir(tessdata):
+            os.environ["TESSDATA_PREFIX"] = tessdata
 
     try:
         langs = pytesseract.get_languages()
@@ -163,8 +191,6 @@ def _hash_text(text: str) -> str:
 
 def _windows_ocr(pil_image: "Image.Image") -> str:
     """Use Windows 10/11 built-in OCR engine."""
-    from PIL import Image
-
     global _windows_ocr_available
     if _windows_ocr_available is False:
         return ""
@@ -176,6 +202,8 @@ def _windows_ocr(pil_image: "Image.Image") -> str:
     except ImportError:
         _windows_ocr_available = False
         return ""
+
+    from PIL import Image
 
     try:
         engine = wocr.OcrEngine.try_create_from_user_profile_languages()
@@ -267,17 +295,17 @@ def extract_screen_text(frame: CapturedFrame) -> str:
 
 
 def _prepare_for_tesseract(pil_image: "Image.Image") -> "Image.Image":
-    """Improve full-screen OCR odds before sending to Tesseract."""
+    """Preprocess image for Tesseract OCR."""
     from PIL import Image, ImageFilter, ImageOps
 
     image = pil_image.convert("L")
     width, height = image.size
-    # Downscale to max 1024px for speed — Tesseract is much faster on smaller images
+    # Downscale to max 1920px — preserves text readability
     max_dim = max(width, height)
-    if max_dim > 1024:
-        scale = 1024.0 / max_dim
+    if max_dim > 1920:
+        scale = 1920.0 / max_dim
         image = image.resize((int(width * scale), int(height * scale)), Image.Resampling.LANCZOS)
-    image = ImageOps.autocontrast(image)
+    image = ImageOps.autocontrast(image, cutoff=2)
     image = image.filter(ImageFilter.SHARPEN)
     return image
 

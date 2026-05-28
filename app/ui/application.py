@@ -33,7 +33,7 @@ from app.core.privacy_guard import BasicPrivacyGuard
 from app.core.screen_capture import MssScreenCapture
 from app.core.screen_context import capture_screen_context
 from app.core.utils import as_density
-from app.models import AppSettings, BarrageItem, Density, FrameStats, GenerationRequest, SceneSummary
+from app.models import AppSettings, BarrageItem, CapturedFrame, Density, FrameStats, GenerationRequest, SceneSummary
 from app.ui.control_panel import ControlPanel
 from app.ui.overlay import PySideOverlayRenderer
 from app.ui.tray import AppTray
@@ -80,9 +80,14 @@ class RuntimeController(QObject):
             density=settings.density,
             track_height=self._overlay.track_height(),
         )
-        self._executor = ThreadPoolExecutor(max_workers=1)
-        self._generation_future: Future[list[BarrageItem]] | None = None
+        self._executor = ThreadPoolExecutor(max_workers=6)
+        self._generation_futures: list[Future[list[BarrageItem]]] = []
         self._barrage_buffer: list[BarrageItem] = []
+        self._ai_buf_count: int = 0  # tracks AI barrages only (mock excluded)
+        self._api_latency_ms: float = 0
+        self._concurrent_count: int = 0
+        self._latency_ema_s: float = 6.0  # EMA estimate, seeded at 6s (medium)
+        self._pending_request: GenerationRequest | None = None
         self._last_stats: FrameStats | None = None
         self._last_scene = SceneSummary(
             activity="unknown",
@@ -108,6 +113,8 @@ class RuntimeController(QObject):
             "tokens_approx_out": 0,
         }
         self._last_ocr_text: str = ""
+        self._ocr_accumulator: list[str] = []
+        self._ai_ever_responded: bool = False  # becomes True on first AI success
         self._last_api_request: str = ""
         self._last_api_response: str = ""
         self._ocr_future: Future | None = None  # async OCR task
@@ -127,6 +134,8 @@ class RuntimeController(QObject):
         panel.densityChanged.connect(self.set_density)
         panel.displayAreaChanged.connect(self.set_display_area)
         panel.fontSizeChanged.connect(self.set_font_size)
+        panel.opacityChanged.connect(self.set_opacity)
+        panel.speedChanged.connect(self.set_speed)
         panel.settingsSaved.connect(self.update_settings)
         panel.quitRequested.connect(QApplication.quit)
 
@@ -136,6 +145,27 @@ class RuntimeController(QObject):
         self._render_timer.start(DEFAULT_RENDER_TICK_MS)
         self._schedule_next_send()
         self._fill_timer.start(random.randint(400, 900))
+
+        # Startup warmup: inject welcome mock barrages immediately
+        if not isinstance(self._generator, MockBarrageService):
+            warmup_texts = [
+                "开播了！", "来了来了", "主播今天好早", "终于等到你",
+                "前排前排", "今天播什么", "好久不见", "欢迎欢迎",
+                "我最爱的主播又开播了", "第一！", "蹲到了", "来晚了没有",
+                "终于开播了！", "我来晚了吗？ ", "gogogo出发咯", "主播你干嘛哈哈哎哟",
+                "鸡你太美", "主播这期是不是有点太隐晦了",
+            ]
+            from app.models import BarrageItem as BI
+            import uuid
+            warmup_items = [
+                BI(id=str(uuid.uuid4()), text=t, persona=random.choice(DEFAULT_PERSONAS),
+                   priority=0, created_at=time.time(), duration_seconds=8.0)
+                for t in random.sample(warmup_texts, k=min(20, len(warmup_texts)))
+            ]
+            self._buffer_items(warmup_items, source="mock")
+            self._stats["barrages_mock"] += len(warmup_items)
+            logger.info("启动预热: 已注入 %d 条模拟欢迎弹幕", len(warmup_items))
+
         self._capture_and_generate()
         self._restart_capture_timer()
         source = "模拟弹幕" if isinstance(self._generator, MockBarrageService) else "AI"
@@ -195,6 +225,14 @@ class RuntimeController(QObject):
         return self._last_api_response
 
     @property
+    def api_latency_ms(self) -> float:
+        return self._api_latency_ms
+
+    @property
+    def concurrent_count(self) -> int:
+        return self._concurrent_count
+
+    @property
     def is_paused(self) -> bool:
         return self._paused
 
@@ -220,29 +258,59 @@ class RuntimeController(QObject):
 
     def set_display_area(self, value: int) -> None:
         self._settings.display_area_percent = value
-        self._overlay.set_display_options(value, self._settings.barrage_font_size)
+        self._overlay.set_display_options(value, self._settings.barrage_font_size,
+                                          self._settings.opacity_percent,
+                                          self._settings.speed_level)
 
     def set_font_size(self, value: int) -> None:
         self._settings.barrage_font_size = value
-        self._overlay.set_display_options(self._settings.display_area_percent, value)
+        self._overlay.set_display_options(self._settings.display_area_percent, value,
+                                          self._settings.opacity_percent,
+                                          self._settings.speed_level)
         self._manager.set_track_layout(self._overlay.track_height(), DEFAULT_TRACK_GAP)
+
+    def set_opacity(self, value: int) -> None:
+        self._settings.opacity_percent = value
+        self._overlay.set_opacity(value)
+
+    def set_speed(self, value: int) -> None:
+        self._settings.speed_level = value
+        self._overlay.set_speed(value)
 
     def update_settings(self, settings: AppSettings) -> None:
         self._settings = settings
         self._settings_store.save(settings)
         self._manager.set_density(settings.density)
-        self._overlay.set_display_options(settings.display_area_percent, settings.barrage_font_size)
+        self._overlay.set_display_options(settings.display_area_percent, settings.barrage_font_size,
+                                          settings.opacity_percent, settings.speed_level)
         self._manager.set_track_layout(self._overlay.track_height(), DEFAULT_TRACK_GAP)
         self._generator = self._build_generator()
         self._ai_failures = 0  # reset on settings change
         self._restart_capture_timer()
         self._fill_timer.start(random.randint(400, 900))
         source = "模拟弹幕" if isinstance(self._generator, MockBarrageService) else "AI"
-        logger.info("配置已更新 | 弹幕来源=%s | 密度=%s", source, settings.density)
+        logger.info(
+            "配置已更新 | 来源=%s | 密度=%s | 成本=%s | 隐私=%s | "
+            "截屏间隔=%.1fs | 显示区域=%d%% | 不透明度=%d%% | 速度=%d",
+            source, settings.density, settings.cost_mode, settings.privacy_mode,
+            settings.capture_interval_seconds, settings.display_area_percent,
+            settings.opacity_percent, settings.speed_level,
+        )
 
     def _capture_and_generate(self) -> None:
-        if self._paused or self._generation_future is not None:
+        if self._paused:
             return
+
+        # Collect completed futures first
+        for f in list(self._generation_futures):
+            if f.done():
+                try:
+                    items = f.result()
+                    self._buffer_items(items)
+                    self._feed_activity(items)
+                except Exception:
+                    pass
+                self._generation_futures.remove(f)
 
         self._stats["captures"] += 1
         encoded_frame: str | None = None
@@ -266,8 +334,8 @@ class RuntimeController(QObject):
             frame = self._blank_frame()
 
         try:
-            # --- OCR: submit to background thread to avoid blocking UI ---
-            ocr_text = self._last_ocr_text  # use previous result for this cycle
+            # --- OCR: submit to background thread, use accumulated results ---
+            ocr_text = " | ".join(self._ocr_accumulator[-10:]) if self._ocr_accumulator else self._last_ocr_text
             if self._settings.enable_ocr and not isinstance(self._generator, MockBarrageService):
                 if self._ocr_future is None or self._ocr_future.done():
                     self._ocr_future = self._executor.submit(
@@ -285,7 +353,10 @@ class RuntimeController(QObject):
 
             if self._settings.enable_vision and not isinstance(self._generator, MockBarrageService):
                 encoded_frame = encode_frame_jpeg_base64(frame)
-            self._last_stats, scene = self._analyzer.analyze(frame)
+
+            # Compress frame for fast analysis (max 800px)
+            analysis_frame = self._shrink_frame(frame, max_dim=800)
+            self._last_stats, scene = self._analyzer.analyze(analysis_frame)
 
             # Merge screen context sources into the scene summary.
             # OCR text is the most specific signal — prepend it.
@@ -319,11 +390,12 @@ class RuntimeController(QObject):
             )
 
         cached = self._cache.get(self._last_scene, DEFAULT_AI_BARRAGE_COUNT)
-        if len(cached) >= DEFAULT_AI_BARRAGE_COUNT and self._last_scene.event == "normal":
-            self._buffer_items(cached)
-            self._stats["barrages_cache"] += len(cached)
+        if len(cached) >= 5 and self._last_scene.event == "normal":
+            take = min(len(cached), 5)
+            self._buffer_items(cached[:take])
+            self._stats["barrages_cache"] += take
             self._restart_capture_timer()
-            logger.debug("使用缓存弹幕 | scene=%s/%s/%s", self._last_scene.activity, self._last_scene.pace, self._last_scene.event)
+            logger.debug("使用缓存弹幕 %d 条 | scene=%s/%s/%s", take, self._last_scene.activity, self._last_scene.pace, self._last_scene.event)
             return
 
         request = GenerationRequest(
@@ -339,18 +411,16 @@ class RuntimeController(QObject):
         api_model = self._settings.api.model if self._settings.api else "none"
         ctx_preview = (request.scene.screen_context or "(无)")[:120]
         scene = request.scene
-        self._panel.append_api_log(
-            f">>> 发送请求: provider={api_provider} | model={api_model} | "
-            f"scene={scene.activity}/{scene.pace}/{scene.event} | "
-            f"image={'YES' if request.image_base64 else 'NO'}\n"
-            f"    context: {ctx_preview}"
-        )
-
-        self._generation_future = self._executor.submit(self._generate_items, request)
+        # Store latest scene for fill timer to trigger generation
+        self._pending_request = request
+        # Clear OCR accumulator — these texts have been included in the request
+        self._ocr_accumulator.clear()
         self._restart_capture_timer()
 
     def _generate_items(self, request: GenerationRequest) -> list[BarrageItem]:
+        self._concurrent_count += 1
         self._stats["api_calls"] += 1
+        t0 = time.time()
         # Rough token estimate: CJK ~1.5 tokens/char, ASCII ~0.3 tokens/char
         text = (request.scene.screen_context or "") + " " * 200
         cjk = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
@@ -358,6 +428,12 @@ class RuntimeController(QObject):
         self._stats["tokens_approx_in"] += int(cjk * 1.5 + ascii_chars * 0.3)
 
         result = self._generator.generate(request)
+        elapsed_s = time.time() - t0
+        self._api_latency_ms = elapsed_s * 1000
+        # EMA smoothing: α=0.3, so recent responses have more weight
+        self._latency_ema_s = 0.3 * elapsed_s + 0.7 * self._latency_ema_s
+        self._concurrent_count = max(0, self._concurrent_count - 1)
+
         if result.error:
             logger.warning("[API 响应] 失败: %s", result.error)
             self._stats["api_failures"] += 1
@@ -368,6 +444,9 @@ class RuntimeController(QObject):
                 self._panel.set_status("AI 请求连续失败，已切换模拟模式", "error")
         else:
             self._ai_failures = 0
+            if not self._ai_ever_responded:
+                self._ai_ever_responded = True
+                logger.info("首次 AI 响应到达 (延迟≈%.1fs)，切换为 AI+模拟混合模式", self._latency_ema_s)
             # Track token output
             total_text = "".join(item.text for item in result.items)
             cjk = sum(1 for c in total_text if "\u4e00" <= c <= "\u9fff")
@@ -400,10 +479,13 @@ class RuntimeController(QObject):
                 raw_text = ocr_result.text
                 if raw_text and self._ocr_cache.should_send(raw_text):
                     self._last_ocr_text = raw_text
+                    self._ocr_accumulator.append(raw_text)
+                    if len(self._ocr_accumulator) > 20:
+                        self._ocr_accumulator = self._ocr_accumulator[-20:]
                     self._panel.append_ocr_log(
-                        f"{ocr_result.engine} 识别到 {len(raw_text)} 字符，已发送:\n{raw_text}"
+                        f"{ocr_result.engine} 识别到 {len(raw_text)} 字符，已累积 {len(self._ocr_accumulator)} 条"
                     )
-                    logger.info("OCR 识别 %d 字符: %.80s", len(raw_text), raw_text)
+                    logger.info("OCR 识别 %d 字符（累积 %d 条）: %.80s", len(raw_text), len(self._ocr_accumulator), raw_text)
                 elif raw_text:
                     self._panel.append_ocr_log(
                         f"识别到 {len(raw_text)} 字符，重复内容已抑制:\n{raw_text[:120]}"
@@ -414,13 +496,16 @@ class RuntimeController(QObject):
                 logger.warning("OCR 后台任务异常: %s", exc)
             self._ocr_future = None
 
-        if self._generation_future is not None and self._generation_future.done():
-            try:
-                items = self._generation_future.result()
-                self._buffer_items(items)
-            except Exception as exc:
-                logger.error("生成任务异常: %s", exc)
-            self._generation_future = None
+        # Collect completed generation futures
+        for f in list(self._generation_futures):
+            if f.done():
+                try:
+                    items = f.result()
+                    self._buffer_items(items)
+                    self._feed_activity(items)
+                except Exception:
+                    pass
+                self._generation_futures.remove(f)
 
         assignments = self._manager.tick(
             now=time.time(),
@@ -431,14 +516,22 @@ class RuntimeController(QObject):
             self._overlay.render(assignments)
 
     def _send_interval_range(self) -> tuple[int, int]:
-        """Return (min_ms, max_ms) based on density and highlight state."""
+        """Return (min_ms, max_ms) based on density and highlight state.
+        Adds backpressure when buffer is very full to spread out batches."""
         is_highlight = self._last_scene.event == "highlight"
         table = DENSITY_HIGHLIGHT_INTERVAL if is_highlight else DENSITY_SEND_INTERVAL
         density = str(self._settings.density)
         result = table.get(density)
-        if result is not None:
-            return (int(result[0]), int(result[1]))
-        return (400, 2000)
+        if result is None:
+            result = (400, 2000)
+        min_ms, max_ms = int(result[0]), int(result[1])
+        # Backpressure: when buffer is full, slow down to avoid dumping all at once
+        buf_len = len(self._barrage_buffer)
+        if buf_len > 25:
+            factor = min(4.0, buf_len / 15.0)
+            min_ms = int(min_ms * factor)
+            max_ms = int(max_ms * factor)
+        return (min_ms, max_ms)
 
     def _schedule_next_send(self) -> None:
         if not self._paused:
@@ -449,6 +542,7 @@ class RuntimeController(QObject):
     def _send_next_barrage(self) -> None:
         if not self._paused and self._barrage_buffer:
             item = self._barrage_buffer.pop(0)
+            self._ai_buf_count = max(0, self._ai_buf_count - 1)
             self._apply_persona_speed(item)
             self._manager.enqueue([item])
             self._stats["barrages_sent"] += 1
@@ -457,43 +551,141 @@ class RuntimeController(QObject):
         self._schedule_next_send()
 
     def _fill_buffer_tick(self) -> None:
-        """Always runs — keeps the send buffer topped up via mock generation.
-        AI-generated barrages (from the capture cycle) supplement this,
-        but the mock fill ensures continuous flow regardless of API status."""
+        """Dynamic concurrency: more concurrent AI requests when buffer is low,
+        fewer when buffer is high. Mock blended per cost mode."""
         if self._paused:
             return
-        if len(self._barrage_buffer) >= 6:
-            self._fill_timer.start(random.randint(400, 1000))
+
+        use_ai = not isinstance(self._generator, MockBarrageService)
+        buf_len = len(self._barrage_buffer)
+        ai_cnt = self._ai_buf_count  # only AI barrages, for trigger decisions
+
+        # Clean up completed futures
+        self._generation_futures = [f for f in self._generation_futures if not f.done()]
+
+        if not use_ai:
+            if buf_len < 6:
+                count = random.randint(1, 3)
+                personas = random.sample(DEFAULT_PERSONAS, k=min(count, len(DEFAULT_PERSONAS)))
+                result = self._mock_generator.generate(GenerationRequest(
+                    scene=self._last_scene, density=self._settings.density,
+                    personas=personas, count=len(personas),
+                ))
+                if result.items:
+                    self._buffer_items(result.items, source="mock")
+                    self._stats["barrages_mock"] += len(result.items)
+            self._fill_timer.start(random.randint(400, 900))
             return
 
-        count = random.randint(1, 3)
-        personas = random.sample(DEFAULT_PERSONAS, k=min(count, len(DEFAULT_PERSONAS)))
-        request = GenerationRequest(
-            scene=self._last_scene,
-            density=self._settings.density,
-            personas=personas,
-            count=len(personas),
-        )
-        result = self._mock_generator.generate(request)
-        if result.items:
-            self._buffer_items(result.items)
-            self._stats["barrages_mock"] += len(result.items)
+        # AI mode: adaptive batching + startup phase handling
+        in_flight = len(self._generation_futures)
+        cost = str(self._settings.cost_mode)
+        density = str(self._settings.density)
+        lat = self._latency_ema_s
 
-        self._fill_timer.start(random.randint(400, 900))
+        # ── Startup: more aggressive mock while waiting for first AI ─────
+        if not self._ai_ever_responded:
+            if buf_len < 50:
+                count = random.randint(2, 4)
+                personas = random.sample(DEFAULT_PERSONAS, k=min(count, len(DEFAULT_PERSONAS)))
+                result = self._mock_generator.generate(GenerationRequest(
+                    scene=self._last_scene, density=density,
+                    personas=personas, count=len(personas),
+                ))
+                if result.items:
+                    self._buffer_items(result.items, source="mock")
+                    self._stats["barrages_mock"] += len(result.items)
+        # ──────────────────────────────────────────────────────────────────
+
+        # Adaptive batch size: scales from 8 (fast) → 50 (very slow)
+        adaptive_batch = max(8, min(50, int(lat * 1.3 + 3)))
+        scale = 1.5 if density == "high" else 1.0
+        thresholds = {
+            "empty": int(adaptive_batch * 0.5 * scale),
+            "low":   int(adaptive_batch * 1.1 * scale),
+            "mid":   int(adaptive_batch * 1.8 * scale),
+        }
+
+        # Use AI-only count for trigger decisions (mock doesn't count)
+        if ai_cnt < thresholds["empty"]:
+            level = "empty"
+        elif ai_cnt < thresholds["low"]:
+            level = "low"
+        elif ai_cnt < thresholds["mid"]:
+            level = "mid"
+        else:
+            level = "full"
+
+        # Adaptive concurrency
+        if lat < 3.0:
+            concurrency = {"empty": 1, "low": 1, "mid": 1, "full": 0}
+        elif lat < 8.0:
+            concurrency = {"empty": 2, "low": 1, "mid": 1, "full": 0}
+        elif lat < 20.0:
+            concurrency = {"empty": 3, "low": 2, "mid": 1, "full": 0}
+        else:
+            concurrency = {"empty": 4, "low": 3, "mid": 2, "full": 1}
+
+        cost_scale = {"immersive": 1.0, "balanced": 0.6, "saving": 0.3}
+        cs = cost_scale.get(cost, 1.0)
+        target = max(0, int(concurrency.get(level, 0) * cs + 0.5))
+
+        # Mock blend — inject mock barrages ALONGSIDE AI every tick
+        mock_per_tick = {"immersive": 1, "balanced": 2, "saving": 4}
+        mock_n = random.randint(0, mock_per_tick.get(cost, 2))
+        if mock_n > 0 and buf_len < 100:
+            personas = random.sample(DEFAULT_PERSONAS, k=min(mock_n, len(DEFAULT_PERSONAS)))
+            result = self._mock_generator.generate(GenerationRequest(
+                scene=self._last_scene, density=density,
+                personas=personas, count=len(personas),
+            ))
+            if result.items:
+                self._buffer_items(result.items, source="mock")
+                self._stats["barrages_mock"] += len(result.items)
+
+        # Launch AI requests up to target concurrency
+        launched = 0
+        while in_flight + launched < target and self._pending_request is not None:
+            # Override batch size in the pending request with adaptive value
+            self._pending_request.count = adaptive_batch
+            logger.info(
+                "AI请求 | 批次=%d条 | 并发=%d/%d | 缓冲=%d | 延迟≈%.1fs",
+                adaptive_batch, in_flight + launched + 1, target, buf_len, lat,
+            )
+            fut = self._executor.submit(self._generate_items, self._pending_request)
+            self._generation_futures.append(fut)
+            launched += 1
+
+        # Faster tick during startup to keep mock flowing
+        interval = random.randint(300, 600) if not self._ai_ever_responded else random.randint(800, 2500)
+        self._fill_timer.start(interval)
+
+    def _feed_activity(self, items: list[BarrageItem]) -> None:
+        """Send AI-generated barrages to the activity panel for display."""
+        ai_items = [
+            (item.persona, item.text)
+            for item in items
+            if item.persona and item.text
+        ]
+        if ai_items:
+            self._panel.add_activity_items(ai_items)
 
     @staticmethod
     def _apply_persona_speed(item: BarrageItem) -> None:
         base = DEFAULT_BARRAGE_DURATION_SECONDS
         factor = PERSONA_SPEED.get(str(item.persona), 1.0)
-        jitter = random.uniform(0.85, 1.15)
+        jitter = random.uniform(0.95, 1.05)
         item.duration_seconds = base * factor * jitter
 
-    def _buffer_items(self, items: list[BarrageItem]) -> None:
+    def _buffer_items(self, items: list[BarrageItem], source: str = "ai") -> None:
         capacity = max(0, DEFAULT_BARRAGE_BUFFER_LIMIT - len(self._barrage_buffer))
         if capacity <= 0:
             logger.debug("发送缓冲区已满，丢弃 %d 条", len(items))
             return
-        self._barrage_buffer.extend(items[:capacity])
+        added = items[:capacity]
+        self._barrage_buffer.extend(added)
+        if source == "ai":
+            self._ai_buf_count += len(added)
 
     def _restart_capture_timer(self) -> None:
         if self._paused:
@@ -508,6 +700,32 @@ class RuntimeController(QObject):
         return OpenAICompatibleBarrageService(
             api_config=self._settings.api,
             fallback=self._mock_generator,
+        )
+
+    @staticmethod
+    def _shrink_frame(frame: CapturedFrame, max_dim: int = 800) -> CapturedFrame:
+        """Return a copy of *frame* with its image downscaled so the longest
+        side does not exceed *max_dim*. Uses Pillow for fast resampling."""
+        w, h = frame.width, frame.height
+        if max(w, h) <= max_dim:
+            return frame
+        from PIL import Image
+        raw = getattr(frame, 'raw', None) or getattr(frame, 'bgra', None) or getattr(frame, 'rgb', None) or getattr(frame.image, 'raw', None)
+        if raw is None:
+            raw = bytes(frame.image) if hasattr(frame.image, '__bytes__') else b''
+        bpp = max(1, len(raw) // max(1, w * h))
+        mode = 'RGBA' if bpp >= 4 else 'RGB' if bpp >= 3 else 'L'
+        try:
+            img = Image.frombuffer(mode, (w, h), raw, 'raw', mode)
+        except Exception:
+            img = Image.frombytes(mode, (w, h), raw)
+        scale = max_dim / max(w, h)
+        new_size = (int(w * scale), int(h * scale))
+        img = img.resize(new_size, Image.Resampling.LANCZOS)
+        raw_out = img.tobytes('raw', mode)
+        return CapturedFrame(
+            width=new_size[0], height=new_size[1],
+            timestamp=frame.timestamp, image=raw_out,
         )
 
     @staticmethod

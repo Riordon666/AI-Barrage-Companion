@@ -10,24 +10,24 @@ DEFAULT_MIN_BARRAGE_SPEED = 80.0
 DEFAULT_TRACK_HEIGHT = 36
 DEFAULT_TRACK_GAP = 12
 DEFAULT_SETTINGS_FILENAME = "abc-settings.json"
-DEFAULT_AI_BARRAGE_COUNT = 3
+DEFAULT_AI_BARRAGE_COUNT = 30
 DEFAULT_RENDER_TICK_MS = 100
-DEFAULT_BARRAGE_BUFFER_LIMIT = 10
+DEFAULT_BARRAGE_BUFFER_LIMIT = 120
 DEFAULT_DISPLAY_AREA_PERCENT = 65
 DEFAULT_BARRAGE_FONT_SIZE = 18
 
 # Density → (min_ms, max_ms) send interval for normal scenes.
 DENSITY_SEND_INTERVAL = {
-    "low": (800, 3500),
-    "medium": (400, 2000),
-    "high": (200, 1200),
+    "low": (667, 2000),    # 0.5–1.5 barrages/sec
+    "medium": (333, 1000),  # 1–3 barrages/sec
+    "high": (167, 500),     # 2–6 barrages/sec
 }
 
 # Density → (min_ms, max_ms) send interval for highlight / burst scenes.
 DENSITY_HIGHLIGHT_INTERVAL = {
-    "low": (300, 1500),
-    "medium": (150, 800),
-    "high": (80, 400),
+    "low": (250, 1000),
+    "medium": (125, 500),
+    "high": (60, 250),
 }
 
 # Burst gap divisor: track gap is divided by this value during highlights.
@@ -35,9 +35,9 @@ HIGHLIGHT_GAP_DIVISOR = 3
 
 # Persona → speed multiplier for barrage duration (lower = faster).
 PERSONA_SPEED: dict[str, float] = {
-    "troll": 0.65,
-    "support": 0.9,
-    "sarcastic": 1.2,
-    "follower": 0.75,
-    "fun": 0.9,
+    "troll": 0.85,
+    "support": 0.95,
+    "sarcastic": 1.05,
+    "follower": 0.90,
+    "fun": 0.95,
 }

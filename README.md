@@ -2,7 +2,7 @@
 
 **AI 驱动的虚拟弹幕陪伴应用。** 轻量分析屏幕状态，生成 AI 或本地弹幕，在透明悬浮层中滚动显示，模拟"有人在看、有人在吐槽、有人在陪伴"的直播氛围。
 
-![Python](https://img.shields.io/badge/python-3.9+-blue) ![License](https://img.shields.io/badge/license-MIT-green)
+![Python](https://img.shields.io/badge/python-3.9+-blue) ![License](https://img.shields.io/badge/license-GPL--3.0-green) ![Version](https://img.shields.io/badge/version-0.1.0-orange)
 
 ---
 

@@ -19,13 +19,6 @@ class BasicCaptureScheduler:
         max_interval = base
         reason = "timer"
 
-        if settings.cost_mode == "saving":
-            min_interval = max(base, 8.0)
-            max_interval = max(min_interval, 12.0)
-        elif settings.cost_mode == "immersive":
-            min_interval = max(1.0, min(base, 2.0))
-            max_interval = max(min_interval, base)
-
         if last_stats is not None:
             if last_stats.pace == "idle":
                 max_interval = max(max_interval, 12.0)

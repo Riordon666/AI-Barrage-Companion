@@ -2,13 +2,13 @@ from app.core.capture_scheduler import BasicCaptureScheduler
 from app.models import AppSettings, FrameStats
 
 
-def test_scheduler_uses_saving_mode_longer_window() -> None:
+def test_scheduler_respects_user_interval() -> None:
     settings = AppSettings(cost_mode="saving", capture_interval_seconds=4.0)
 
     policy = BasicCaptureScheduler().next_policy(None, settings)
 
-    assert policy.min_interval_seconds == 8.0
-    assert policy.max_interval_seconds == 12.0
+    assert policy.min_interval_seconds == 4.0
+    assert policy.max_interval_seconds == 4.0
 
 
 def test_scheduler_speeds_up_fast_activity() -> None:

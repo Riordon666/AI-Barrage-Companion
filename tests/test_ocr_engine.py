@@ -23,7 +23,7 @@ class TestCleanOcrText:
     def test_truncates_long_text(self) -> None:
         raw = "word " * 200
         result = _clean_ocr_text(raw)
-        assert len(result) <= 300 + 5  # plus "…" and some tolerance
+        assert len(result) <= 800 + 5  # _MAX_OCR_CHARS=800 plus "…"
 
     def test_collapses_whitespace(self) -> None:
         raw = "hello    world  \n\n  foo   bar"
