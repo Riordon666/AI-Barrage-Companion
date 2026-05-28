@@ -5,3 +5,7 @@ __pycache__/
 abc-settings.json
 *.egg-info/
 /ocr/
+/build/
+/ocr-pack/
+/abc.spec
+/dist/
