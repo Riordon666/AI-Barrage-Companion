@@ -91,10 +91,10 @@ def _get_bundled_dir() -> str:
     import sys
 
     if getattr(sys, "frozen", False):
-        return os.path.join(sys._MEIPASS, "tesseract")  # type: ignore[union-attr]
+        return os.path.join(sys._MEIPASS, "ocr")  # type: ignore[union-attr]
 
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-    return os.path.join(project_root, "tesseract")
+    return os.path.join(project_root, "ocr")
 
 
 def _find_tesseract_cmd() -> str | None:
