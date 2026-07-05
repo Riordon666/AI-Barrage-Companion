@@ -1153,12 +1153,13 @@ class ControlPanel(QWidget):
         "关于 AI Barrage Companion",
     ]
 
-    def __init__(self, settings: AppSettings) -> None:
+    def __init__(self, settings: AppSettings, settings_store=None) -> None:
         super().__init__()
         self.setWindowTitle("AI Barrage Companion")
         self.setMinimumSize(1100, 700)
         self.resize(1200, 750)
         self._settings = settings
+        self._settings_store = settings_store
         self._build()
         self._apply_global()
         self._load_settings(settings)
@@ -2254,22 +2255,43 @@ class ControlPanel(QWidget):
         self._settings.speed_level = self._speed.value()
         self.settingsSaved.emit(self._settings)
 
-        # Save button feedback
-        self._save_btn.setText("✓ 已保存")
-        self._save_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {_C['accent2']};
-                color: #000;
-                border: none;
-                border-radius: 18px;
-                padding: 0 16px;
-                font-size: 12px;
-                font-weight: 700;
-            }}
-        """)
-        self._saved_time.setText(f"配置已保存 {time.strftime('%H:%M:%S')}")
-        self.set_status("配置已保存", "success")
-        QTimer.singleShot(2000, lambda: (
+        # Persist to disk and only show success when the write actually succeeded.
+        ok = True
+        if self._settings_store is not None:
+            ok = self._settings_store.save(self._settings)
+
+        if ok:
+            self._save_btn.setText("✓ 已保存")
+            self._save_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {_C['accent2']};
+                    color: #000;
+                    border: none;
+                    border-radius: 18px;
+                    padding: 0 16px;
+                    font-size: 12px;
+                    font-weight: 700;
+                }}
+            """)
+            self._saved_time.setText(f"配置已保存 {time.strftime('%H:%M:%S')}")
+            self.set_status("配置已保存", "success")
+        else:
+            self._save_btn.setText("⚠ 保存失败")
+            self._save_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {_C['red']};
+                    color: #fff;
+                    border: none;
+                    border-radius: 18px;
+                    padding: 0 16px;
+                    font-size: 12px;
+                    font-weight: 700;
+                }}
+            """)
+            self._saved_time.setText(f"保存失败 {time.strftime('%H:%M:%S')} — 磁盘满或权限不足")
+            self.set_status("保存失败！请检查磁盘空间或文件权限", "error")
+
+        QTimer.singleShot(3000, lambda: (
             self._save_btn.setText("保存配置"),
             self._save_btn.setStyleSheet(f"""
                 QPushButton {{

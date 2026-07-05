@@ -96,7 +96,8 @@ class SettingsStore:
         except (json.JSONDecodeError, OSError):
             return default_settings(), "配置文件损坏，已回退默认配置"
 
-    def save(self, settings: AppSettings) -> None:
+    def save(self, settings: AppSettings) -> bool:
+        """Persist settings to disk.  Returns ``True`` on success."""
         data = asdict(settings)
         # Encrypt API keys before saving
         if self._fernet:
@@ -113,11 +114,10 @@ class SettingsStore:
         try:
             tmp_path.write_text(json_text, encoding="utf-8")
             tmp_path.replace(self.path)
+            return True
         except OSError:
-            # Disk full, permission denied, or filesystem error – fail silently
-            # rather than crashing the application. Settings are still held
-            # in-memory and can be saved on the next attempt.
-            pass
+            logger.warning("保存设置失败（磁盘满 / 权限不足 / 文件被锁定）: %s", self.path)
+            return False
 
     def _settings_from_dict(self, raw: dict[str, Any]) -> AppSettings:
         api_raw = raw.get("api")

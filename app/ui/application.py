@@ -279,7 +279,6 @@ class RuntimeController(QObject):
 
     def update_settings(self, settings: AppSettings) -> None:
         self._settings = settings
-        self._settings_store.save(settings)
         self._manager.set_density(settings.density)
         self._overlay.set_display_options(settings.display_area_percent, settings.barrage_font_size,
                                           settings.opacity_percent, settings.speed_level)
@@ -756,7 +755,7 @@ def run_application(argv: list[str] | None = None) -> int:
     settings_store = SettingsStore()
     settings, warning = settings_store.load()
     overlay = PySideOverlayRenderer()
-    panel = ControlPanel(settings)
+    panel = ControlPanel(settings, settings_store)
     tray = AppTray(panel)
     controller = RuntimeController(settings, settings_store, overlay, panel)
     panel.set_controller(controller)
