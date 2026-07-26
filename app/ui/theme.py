@@ -155,38 +155,6 @@ LINE_EDIT_STYLE = f"""
     QLineEdit:focus {{ border-color: {_C['accent']}; background: rgba(159,130,253,0.03); }}
 """
 
-PRIMARY_BUTTON_STYLE = f"""
-    QPushButton {{
-        background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
-            stop:0 {_C['accent']}, stop:1 {_C['accent2']});
-        color: #191428;
-        border: none;
-        border-radius: {RADIUS_MD}px;
-        padding: 0 20px;
-        font-size: 13px;
-        font-weight: 700;
-    }}
-    QPushButton:hover {{
-        background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
-            stop:0 {_C['accent_dk']}, stop:1 {_C['accent2']});
-    }}
-    QPushButton:pressed {{ padding-top: 1px; }}
-"""
-
-GHOST_BUTTON_STYLE = f"""
-    QPushButton {{
-        background: rgba(159,130,253,0.07);
-        color: {_C['text']};
-        border: 1px solid {_C['border']};
-        border-radius: {RADIUS_MD}px;
-        padding: 0 20px;
-        font-size: 13px;
-    }}
-    QPushButton:hover {{ border-color: {_C['accent']}; background: rgba(159,130,253,0.13); }}
-    QPushButton:pressed {{ background: rgba(159,130,253,0.18); }}
-    QPushButton:disabled {{ color: {_C['text3']}; border-color: {_C['border']}; }}
-"""
-
 SLIDER_STYLE = f"""
     QSlider {{ background: transparent; border: none; }}
     QSlider::groove:horizontal {{

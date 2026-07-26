@@ -36,7 +36,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QPlainTextEdit,
-    QPushButton,
     QScrollArea,
     QSlider,
     QStackedWidget,
@@ -49,6 +48,7 @@ from app.core.logger import get_emitter, get_logger
 from app.core.utils import as_density
 from app.models import ApiConfig, AppSettings
 from app.ui import theme
+from app.ui.buttons import AnimatedButton, SegmentedTabs
 from app.ui.motion import SnapshotFader, animate, animate_geometry, stop_safely
 from app.ui.theme import (
     COMBO_STYLE as _COMBO_STYLE,
@@ -836,11 +836,11 @@ class ControlPanel(QWidget):
     quitRequested = Signal()
 
     _NAV = [
-        ("首页",    "🏠"),
-        ("API 配置", "🔗"),
-        ("设置",    "⚙"),
-        ("日志",    "📋"),
-        ("关于",    "💡"),
+        ("首页",    "home"),
+        ("API 配置", "api"),
+        ("设置",    "sliders"),
+        ("日志",    "logs"),
+        ("关于",    "info"),
     ]
 
     _NAV_SUBTITLES = [
@@ -973,13 +973,10 @@ class ControlPanel(QWidget):
         nav_lay.setContentsMargins(12, 20, 12, 0)
         nav_lay.setSpacing(4)
 
-        self._nav_btns: list[QPushButton] = []
+        self._nav_btns: list[AnimatedButton] = []
         for i, (name, icon) in enumerate(self._NAV):
-            btn = QPushButton(f"  {icon}   {name}")
-            btn.setCheckable(True)
+            btn = AnimatedButton(name, icon=icon, variant="nav", checkable=True)
             btn.setFixedHeight(44)
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setStyleSheet(self._nav_style(i == 0, collapsed=False))
             btn.clicked.connect(lambda _, idx=i: self._switch_page(idx))
             nav_lay.addWidget(btn)
             self._nav_btns.append(btn)
@@ -1040,15 +1037,10 @@ class ControlPanel(QWidget):
             w.setVisible(show)
         self._ver_label.setVisible(show)
 
-        # Update nav button text
-        for i, (name, icon) in enumerate(self._NAV):
-            if self._sidebar_collapsed:
-                self._nav_btns[i].setText(f"  {icon}")
-            else:
-                self._nav_btns[i].setText(f"  {icon}   {name}")
-            self._nav_btns[i].setStyleSheet(
-                self._nav_style(i == self._stack.currentIndex(), collapsed=self._sidebar_collapsed)
-            )
+        # Collapsed sidebar keeps only the icons; AnimatedButton centres the
+        # icon automatically when its text is empty.
+        for i, (name, _icon) in enumerate(self._NAV):
+            self._nav_btns[i].setText("" if self._sidebar_collapsed else name)
 
         # A previous glide may still be running if the user double-clicks the
         # menu button; stop it or the two fight over the same property.
@@ -1060,40 +1052,6 @@ class ControlPanel(QWidget):
             animate(self._sidebar, b"minimumWidth", target_w, duration=DUR_SLOW, easing=EASE_OUT),
             animate(self._sidebar, b"maximumWidth", target_w, duration=DUR_SLOW, easing=EASE_OUT),
         ]
-
-    @staticmethod
-    def _nav_style(active: bool, collapsed: bool = False) -> str:
-        align = "center" if collapsed else "left"
-        # Leave room on the left for the indicator's accent bar.
-        pad = "0" if collapsed else "18px"
-        if active:
-            return f"""
-                QPushButton {{
-                    background: transparent;
-                    color: {_C['accent_dk']};
-                    border: none;
-                    font-size: 13px;
-                    font-weight: 700;
-                    text-align: {align};
-                    padding-left: {pad};
-                }}
-            """
-        return f"""
-            QPushButton {{
-                background: transparent;
-                color: {_C['text3']};
-                border: none;
-                border-radius: 12px;
-                font-size: 13px;
-                font-weight: 500;
-                text-align: {align};
-                padding-left: {pad};
-            }}
-            QPushButton:hover {{
-                color: {_C['text2']};
-                background: rgba(159,130,253,0.055);
-            }}
-        """
 
     def _sync_indicator(self) -> None:
         """Snap the indicator onto the active button without animating."""
@@ -1130,7 +1088,6 @@ class ControlPanel(QWidget):
 
         for i, btn in enumerate(self._nav_btns):
             btn.setChecked(i == idx)
-            btn.setStyleSheet(self._nav_style(i == idx, collapsed=self._sidebar_collapsed))
         self._page_title.setText(self._NAV[idx][0])
         self._page_subtitle.setText(self._NAV_SUBTITLES[idx])
         self._place_indicator(idx, animated=True)
@@ -1153,16 +1110,8 @@ class ControlPanel(QWidget):
         lay.setSpacing(16)
 
         # Menu button — toggles sidebar
-        menu_btn = QPushButton("☰")
-        menu_btn.setFixedSize(32, 32)
-        menu_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        menu_btn.setStyleSheet(f"""
-            QPushButton {{
-                color: {_C['text3']}; font-size: 18px;
-                background: transparent; border: none; border-radius: 8px;
-            }}
-            QPushButton:hover {{ color: {_C['text']}; background: rgba(159,130,253,0.08); }}
-        """)
+        menu_btn = AnimatedButton(icon="menu", variant="flat")
+        menu_btn.setFixedSize(34, 34)
         menu_btn.clicked.connect(self._toggle_sidebar)
         lay.addWidget(menu_btn)
 
@@ -1237,65 +1186,22 @@ class ControlPanel(QWidget):
         self._saved_time.setStyleSheet(f"color:{_C['text3']};font-size:10px;background:transparent;border:none")
         lay.addWidget(self._saved_time)
 
-        # Pause button
-        self._pause_btn = QPushButton("⏸ 暂停")
-        self._pause_btn.setCheckable(True)
-        self._pause_btn.setFixedHeight(32)
-        self._pause_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._pause_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: rgba(159,130,253,0.06);
-                color: {_C['text2']};
-                border: 1px solid {_C['border']};
-                border-radius: 18px;
-                padding: 0 16px;
-                font-size: 12px;
-                font-weight: 600;
-            }}
-            QPushButton:hover {{ border-color: {_C['accent']}60; color: {_C['text']}; }}
-            QPushButton:checked {{
-                background: rgba(251,234,3,0.12);
-                color: {_C['accent2']};
-                border-color: rgba(251,234,3,0.25);
-            }}
-        """)
+        # Pause button — warm yellow while paused
+        self._pause_btn = AnimatedButton(
+            "暂停", icon="pause", variant="ghost", small=True,
+            checkable=True, warm_checked=True,
+        )
         self._pause_btn.toggled.connect(self._on_pause)
         lay.addWidget(self._pause_btn)
 
         # Save button
-        self._save_btn = QPushButton("保存配置")
-        self._save_btn.setFixedHeight(32)
-        self._save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._save_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {_C['accent']}, stop:1 {_C['accent2']});
-                color: #000;
-                border: none;
-                border-radius: 18px;
-                padding: 0 16px;
-                font-size: 12px;
-                font-weight: 700;
-            }}
-        """)
+        self._save_btn = AnimatedButton("保存配置", icon="check", variant="primary", small=True)
         self._save_btn.clicked.connect(self._save_settings)
         _shadow(self._save_btn, level=1)
         lay.addWidget(self._save_btn)
 
         # Exit button
-        quit_btn = QPushButton("✕ 退出")
-        quit_btn.setFixedHeight(32)
-        quit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        quit_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent;
-                color: {_C['text3']};
-                border: none;
-                border-radius: 18px;
-                padding: 0 10px;
-                font-size: 12px;
-            }}
-            QPushButton:hover {{ color: {_C['red']}; background: rgba(239,68,68,0.08); }}
-        """)
+        quit_btn = AnimatedButton("退出", icon="x", variant="danger", small=True)
         quit_btn.clicked.connect(self.quitRequested.emit)
         lay.addWidget(quit_btn)
 
@@ -1412,17 +1318,11 @@ class ControlPanel(QWidget):
         btn_row = QHBoxLayout()
         btn_row.setSpacing(10)
 
-        self._api_test_btn = QPushButton("测试连接")
-        self._api_test_btn.setFixedHeight(36)
-        self._api_test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._api_test_btn.setStyleSheet(theme.GHOST_BUTTON_STYLE)
+        self._api_test_btn = AnimatedButton("测试连接", icon="bolt", variant="ghost")
         self._api_test_btn.clicked.connect(self._test_api_on_page)
         btn_row.addWidget(self._api_test_btn)
 
-        self._api_save_btn = QPushButton("保存配置")
-        self._api_save_btn.setFixedHeight(36)
-        self._api_save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._api_save_btn.setStyleSheet(theme.PRIMARY_BUTTON_STYLE)
+        self._api_save_btn = AnimatedButton("保存配置", icon="check", variant="primary")
         _shadow(self._api_save_btn, level=1)
         self._api_save_btn.clicked.connect(self._save_api_on_page)
         btn_row.addWidget(self._api_save_btn)
@@ -1458,19 +1358,7 @@ class ControlPanel(QWidget):
         hist_card.add_widget(self._api_hist)
 
         del_row = QHBoxLayout()
-        del_btn = QPushButton("删除选中")
-        del_btn.setFixedSize(72, 26)
-        del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        del_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent;
-                color: {_C['text3']};
-                border: 1px solid {_C['border']};
-                border-radius: 8px;
-                font-size: 11px;
-            }}
-            QPushButton:hover {{ color: {_C['red']}; border-color: {_C['red']}40; }}
-        """)
+        del_btn = AnimatedButton("删除选中", icon="trash", variant="danger", small=True)
         del_btn.clicked.connect(self._delete_history_on_page)
         del_row.addStretch()
         del_row.addWidget(del_btn)
@@ -1572,19 +1460,7 @@ class ControlPanel(QWidget):
         self._api_summary = QLabel("未配置 — 将使用模拟弹幕")
         self._api_summary.setStyleSheet(f"color:{_C['text3']};font-size:12px;background:transparent;border:none")
         api_row.addWidget(self._api_summary, 1)
-        api_btn = QPushButton("配置 →")
-        api_btn.setFixedSize(72, 28)
-        api_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        api_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: rgba(159,130,253,0.06);
-                color: {_C['accent']};
-                border: 1px solid {_C['border']};
-                border-radius: 8px;
-                font-size: 11px;
-            }}
-            QPushButton:hover {{ border-color: {_C['accent']}; }}
-        """)
+        api_btn = AnimatedButton("配置", icon="arrow_r", variant="ghost", small=True)
         api_btn.clicked.connect(lambda: self._switch_page(1))
         api_row.addWidget(api_btn)
         card4.add_layout(api_row)
@@ -1642,20 +1518,14 @@ class ControlPanel(QWidget):
 
         tab_bar = QHBoxLayout()
         tab_bar.setSpacing(4)
-        self._log_tab_btns: list[QPushButton] = []
         self._log_pages: list[QPlainTextEdit] = []
         self._log_stack = QStackedWidget()
 
-        for i, name in enumerate(["系统", "OCR", "API"]):
-            btn = QPushButton(name)
-            btn.setCheckable(True)
-            btn.setFixedSize(56, 28)
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setStyleSheet(self._log_tab_style(i == 0))
-            btn.clicked.connect(lambda _, idx=i: self._switch_log_tab(idx))
-            tab_bar.addWidget(btn)
-            self._log_tab_btns.append(btn)
+        self._log_tabs = SegmentedTabs(["系统", "OCR", "API"])
+        self._log_tabs.currentChanged.connect(self._log_stack.setCurrentIndex)
+        tab_bar.addWidget(self._log_tabs)
 
+        for _name in ("系统", "OCR", "API"):
             te = QPlainTextEdit()
             te.setReadOnly(True)
             te.setMaximumBlockCount(500)
@@ -1676,55 +1546,13 @@ class ControlPanel(QWidget):
 
         tab_bar.addStretch()
 
-        clear_btn = QPushButton("清空")
-        clear_btn.setFixedSize(48, 28)
-        clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        clear_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent;
-                color: {_C['text3']};
-                border: 1px solid {_C['border']};
-                border-radius: 8px;
-                font-size: 11px;
-            }}
-            QPushButton:hover {{ color: {_C['red']}; border-color: {_C['red']}40; }}
-        """)
+        clear_btn = AnimatedButton("清空", icon="trash", variant="danger", small=True)
         clear_btn.clicked.connect(lambda: [te.clear() for te in self._log_pages])
         tab_bar.addWidget(clear_btn)
 
         lay.addLayout(tab_bar)
         lay.addWidget(self._log_stack, 1)
         return page
-
-    def _switch_log_tab(self, idx: int) -> None:
-        self._log_stack.setCurrentIndex(idx)
-        for i, btn in enumerate(self._log_tab_btns):
-            btn.setChecked(i == idx)
-            btn.setStyleSheet(self._log_tab_style(i == idx))
-
-    @staticmethod
-    def _log_tab_style(active: bool) -> str:
-        if active:
-            return f"""
-                QPushButton {{
-                    background: rgba(159,130,253,0.08);
-                    color: {_C['accent']};
-                    border: 1px solid {_C['border']};
-                    border-radius: 8px;
-                    font-size: 12px;
-                    font-weight: 600;
-                }}
-            """
-        return f"""
-            QPushButton {{
-                background: transparent;
-                color: {_C['text3']};
-                border: 1px solid transparent;
-                border-radius: 8px;
-                font-size: 12px;
-            }}
-            QPushButton:hover {{ color: {_C['text2']}; }}
-        """
 
     # ── About Page ───────────────────────────────────────────────────────
 
@@ -1864,7 +1692,8 @@ class ControlPanel(QWidget):
             self._stats_timer.start()
 
     def _on_pause(self, paused: bool) -> None:
-        self._pause_btn.setText(f"{'▶' if paused else '⏸'} {'继续' if paused else '暂停'}")
+        self._pause_btn.setText("继续" if paused else "暂停")
+        self._pause_btn.set_icon("play" if paused else "pause")
         self.pauseChanged.emit(paused)
         self.set_status("已暂停" if paused else "运行中", "info")
         logger.info("弹幕%s", "暂停" if paused else "继续")
@@ -2015,49 +1844,19 @@ class ControlPanel(QWidget):
             ok = self._settings_store.save(self._settings)
 
         if ok:
-            self._save_btn.setText("✓ 已保存")
-            self._save_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: {_C['accent2']};
-                    color: #000;
-                    border: none;
-                    border-radius: 18px;
-                    padding: 0 16px;
-                    font-size: 12px;
-                    font-weight: 700;
-                }}
-            """)
+            self._save_btn.setText("已保存")
+            self._save_btn.set_variant("success")
             self._saved_time.setText(f"配置已保存 {time.strftime('%H:%M:%S')}")
             self.set_status("配置已保存", "success")
         else:
-            self._save_btn.setText("⚠ 保存失败")
-            self._save_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: {_C['red']};
-                    color: #fff;
-                    border: none;
-                    border-radius: 18px;
-                    padding: 0 16px;
-                    font-size: 12px;
-                    font-weight: 700;
-                }}
-            """)
+            self._save_btn.setText("保存失败")
+            self._save_btn.set_variant("error")
             self._saved_time.setText(f"保存失败 {time.strftime('%H:%M:%S')} — 磁盘满或权限不足")
             self.set_status("保存失败！请检查磁盘空间或文件权限", "error")
 
         QTimer.singleShot(3000, lambda: (
             self._save_btn.setText("保存配置"),
-            self._save_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {_C['accent']}, stop:1 {_C['accent2']});
-                    color: #000;
-                    border: none;
-                    border-radius: 18px;
-                    padding: 0 16px;
-                    font-size: 12px;
-                    font-weight: 700;
-                }}
-            """),
+            self._save_btn.set_variant("primary"),
         ))
 
     def _load_settings(self, s: AppSettings) -> None:
