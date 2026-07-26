@@ -126,6 +126,10 @@ class GenerationResult:
     items: list[BarrageItem]
     source: GenerationSource
     error: str | None = None
+    # True when the items were already delivered incrementally through the
+    # service's on_item callback while the response streamed in — the caller
+    # must not buffer them a second time.
+    streamed: bool = False
 
 
 @dataclass

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import queue
 import random
 import sys
 import time
@@ -70,6 +71,10 @@ class RuntimeController(QObject):
         self._capture_scheduler = capture_scheduler or BasicCaptureScheduler()
         self._privacy_guard = privacy_guard or BasicPrivacyGuard()
         self._mock_generator = mock_generator or MockBarrageService()
+        # Streamed barrages land here from worker threads the moment their
+        # line arrives; the render tick drains it on the main thread. Must
+        # exist before _build_generator wires the on_item callback to it.
+        self._stream_queue: queue.SimpleQueue[BarrageItem] = queue.SimpleQueue()
         self._generator = self._build_generator()
         self._cache = cache or InMemoryBarrageCache()
         self._overlay.set_display_options(
@@ -350,7 +355,11 @@ class RuntimeController(QObject):
                     screen_context_text = ctx.description
                     logger.info("屏幕上下文: %s (%s)", ctx.description, ctx.app_category)
 
-            if self._settings.enable_vision and not isinstance(self._generator, MockBarrageService):
+            if (
+                self._settings.enable_vision
+                and not isinstance(self._generator, MockBarrageService)
+                and not self._vision_known_unsupported()
+            ):
                 encoded_frame = encode_frame_jpeg_base64(frame)
 
             # Compress frame for fast analysis (max 800px)
@@ -465,9 +474,14 @@ class RuntimeController(QObject):
             )
         if result.items:
             self._cache.put(request.scene, result.items)
+        if result.streamed:
+            # Items already reached the buffer one by one through the stream
+            # queue while the response was still in flight.
+            return []
         return result.items
 
     def _render_tick(self) -> None:
+        self._drain_stream_queue()
         if self._overlay.barrage_region_height() <= 0:
             return
 
@@ -659,6 +673,23 @@ class RuntimeController(QObject):
         interval = random.randint(300, 600) if not self._ai_ever_responded else random.randint(800, 2500)
         self._fill_timer.start(interval)
 
+    def _drain_stream_queue(self) -> None:
+        """Move barrages streamed by worker threads into the send buffer."""
+        drained: list[BarrageItem] = []
+        try:
+            while True:
+                drained.append(self._stream_queue.get_nowait())
+        except queue.Empty:
+            pass
+        if not drained:
+            return
+        if not self._ai_ever_responded:
+            # Flip the startup flag on the FIRST streamed barrage, not on
+            # batch completion — this is what ends the mock-heavy warmup.
+            self._ai_ever_responded = True
+            logger.info("首条 AI 弹幕已到达（流式），切换为 AI+模拟混合模式")
+        self._buffer_items(drained, source="ai")
+
     def _feed_activity(self, items: list[BarrageItem]) -> None:
         """Send AI-generated barrages to the activity panel for display."""
         ai_items = [
@@ -686,6 +717,17 @@ class RuntimeController(QObject):
         if source == "ai":
             self._ai_buf_count += len(added)
 
+    def _vision_known_unsupported(self) -> bool:
+        """True when this (base_url, model) already rejected an image request.
+
+        Saves a JPEG encode per capture cycle — and the doomed 400 round-trip
+        — once the provider has told us it can't take images (e.g. DeepSeek).
+        """
+        api = self._settings.api
+        if api is None:
+            return False
+        return (api.base_url, api.model) in OpenAICompatibleBarrageService._vision_disabled
+
     def _restart_capture_timer(self) -> None:
         if self._paused:
             return
@@ -699,6 +741,7 @@ class RuntimeController(QObject):
         return OpenAICompatibleBarrageService(
             api_config=self._settings.api,
             fallback=self._mock_generator,
+            on_item=self._stream_queue.put,
         )
 
     @staticmethod
