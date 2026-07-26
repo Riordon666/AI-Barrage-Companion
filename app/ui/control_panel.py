@@ -1,20 +1,16 @@
-"""Commercial-grade AI client UI — complete visual restructure."""
+"""Control panel UI — sidebar navigation, live stats, settings and logs."""
 
 from __future__ import annotations
 
 import math
-import random
 import time
 from concurrent.futures import ThreadPoolExecutor
-from collections import deque
 
-import httpx
 from PySide6.QtCore import (
-    QEasingCurve,
-    QPoint,
     QPointF,
-    QPropertyAnimation,
+    QRect,
     QRectF,
+    QSize,
     Qt,
     QTimer,
     Signal,
@@ -22,8 +18,8 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QBrush,
     QColor,
-    QConicalGradient,
     QFont,
+    QFontMetricsF,
     QLinearGradient,
     QPainter,
     QPainterPath,
@@ -31,23 +27,18 @@ from PySide6.QtGui import (
     QRadialGradient,
 )
 from PySide6.QtWidgets import (
-    QApplication,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFrame,
-    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
-    QMainWindow,
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
-    QSizePolicy,
     QSlider,
-    QSpinBox,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -57,146 +48,100 @@ from app.config.provider_presets import SUPPORTED_PROVIDERS, provider_for_key
 from app.core.logger import get_emitter, get_logger
 from app.core.utils import as_density
 from app.models import ApiConfig, AppSettings
+from app.ui import theme
+from app.ui.motion import SnapshotFader, animate, animate_geometry, stop_safely
+from app.ui.theme import (
+    COMBO_STYLE as _COMBO_STYLE,
+    DUR_BASE,
+    DUR_SLOW,
+    EASE_OUT,
+    LINE_EDIT_STYLE,
+    PALETTE as _C,
+    SIDEBAR_COLLAPSED_W as _SIDEBAR_COLLAPSED_W,
+    SIDEBAR_W as _SIDEBAR_W,
+    SLIDER_STYLE,
+)
 
 logger = get_logger("control_panel")
 
-# ─── Palette ────────────────────────────────────────────────────────────
-
-_C = {
-    "bg":       "#ffffff",
-    "bg2":      "#f8f7fc",
-    "surface":  "rgba(159,130,253,0.07)",
-    "surface2": "rgba(159,130,253,0.12)",
-    "surface_y": "rgba(251,234,3,0.08)",
-    "surface_y2": "rgba(251,234,3,0.12)",
-    "border":   "rgba(159,130,253,0.18)",
-    "border_l": "rgba(159,130,253,0.30)",
-    "border_y": "rgba(251,234,3,0.18)",
-    "text":     "#1a1528",
-    "text2":    "#5a5270",
-    "text3":    "#9a94ad",
-    "accent":   "#9F82FD",
-    "accent2":  "#FBEA03",
-    "green":    "#22c55e",
-    "red":      "#ef4444",
-    "cyan":     "#06b6d4",
-}
-
-_SIDEBAR_W = 216
-_SIDEBAR_COLLAPSED_W = 64
-
-_COMBO_STYLE = f"""
-    QComboBox {{
-        background: rgba(159,130,253,0.06);
-        color: {_C['text']};
-        border: 1px solid {_C['border']};
-        border-radius: 8px;
-        padding: 6px 12px;
-        font-size: 13px;
-        min-width: 120px;
-    }}
-    QComboBox:hover {{ border-color: {_C['accent']}; }}
-    QComboBox::drop-down {{ border: none; padding-right: 8px; }}
-    QComboBox::down-arrow {{ image: none; }}
-    QComboBox QAbstractItemView {{
-        background: #ffffff;
-        color: {_C['text']};
-        border: 1px solid {_C['border']};
-        border-radius: 8px;
-        padding: 4px;
-        selection-background-color: rgba(159,130,253,0.15);
-        outline: none;
-    }}
-"""
+_shadow = theme.shadow
 
 
-# ─── Shadow helper ──────────────────────────────────────────────────────
-
-def _shadow(widget: QWidget, radius: int = 30, y: int = 6, alpha: int = 50) -> None:
-    s = QGraphicsDropShadowEffect(widget)
-    s.setBlurRadius(radius)
-    s.setColor(QColor(0, 0, 0, alpha))
-    s.setOffset(0, y)
-    widget.setGraphicsEffect(s)
+def _rounded(rect: QRectF, radius: float) -> QPainterPath:
+    path = QPainterPath()
+    path.addRoundedRect(rect, radius, radius)
+    return path
 
 
-# ─── Sparkline Widget ──────────────────────────────────────────────────
+def _paint_card(
+    painter: QPainter,
+    rect: QRectF,
+    radius: float,
+    *,
+    tint: tuple[int, int, int] = theme.ACCENT_RGB,
+    fill_alpha: int = 18,
+    border_alpha: int = 45,
+) -> QPainterPath:
+    """Paint the shared card treatment: soft tinted body, hairline border and
+    a top inner highlight that reads as light falling from above."""
+    path = _rounded(rect, radius)
 
-class Sparkline(QWidget):
-    """A minimal sparkline chart drawn with QPainter."""
+    body = QLinearGradient(rect.left(), rect.top(), rect.left(), rect.bottom())
+    body.setColorAt(0.0, theme.rgba(tint, max(0, fill_alpha - 6)))
+    body.setColorAt(1.0, theme.rgba(tint, fill_alpha + 6))
+    painter.fillPath(path, QBrush(body))
 
-    def __init__(self, color: str = _C["accent"], parent=None):
-        super().__init__(parent)
-        self._color = QColor(color)
-        self._data: deque[float] = deque([0.0] * 30, maxlen=30)
-        self.setFixedHeight(32)
-        self.setMinimumWidth(80)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.setPen(QPen(theme.rgba(tint, border_alpha), 1))
+    painter.drawPath(path)
 
-    def push(self, value: float) -> None:
-        self._data.append(value)
-        self.update()
-
-    def paintEvent(self, event) -> None:  # type: ignore[override]
-        if len(self._data) < 2:
-            return
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height()
-        pts = list(self._data)
-        mn, mx = min(pts), max(pts)
-        rng = max(mx - mn, 1.0)
-
-        # Build path
-        path = QPainterPath()
-        for i, v in enumerate(pts):
-            x = i * w / (len(pts) - 1)
-            y = h - 4 - (v - mn) / rng * (h - 8)
-            if i == 0:
-                path.moveTo(x, y)
-            else:
-                path.lineTo(x, y)
-
-        # Fill gradient under line
-        fill_path = QPainterPath(path)
-        fill_path.lineTo(w, h)
-        fill_path.lineTo(0, h)
-        fill_path.closeSubpath()
-        grad = QLinearGradient(0, 0, 0, h)
-        c = QColor(self._color)
-        c.setAlpha(40)
-        grad.setColorAt(0, c)
-        c.setAlpha(0)
-        grad.setColorAt(1, c)
-        p.fillPath(fill_path, grad)
-
-        # Stroke
-        pen = QPen(QColor(self._color), 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
-        p.setPen(pen)
-        p.drawPath(path)
-        p.end()
+    # 1px highlight hugging the top edge only.
+    highlight = QPainterPath()
+    highlight.addRoundedRect(rect.adjusted(1, 1, -1, -1), radius - 1, radius - 1)
+    painter.setPen(QPen(QColor(255, 255, 255, 150), 1))
+    painter.setClipRect(QRectF(rect.left(), rect.top(), rect.width(), radius))
+    painter.drawPath(highlight)
+    painter.setClipping(False)
+    return path
 
 
 # ─── Glow Dot ──────────────────────────────────────────────────────────
 
 class GlowDot(QWidget):
-    """Animated glowing status dot."""
+    """Status dot with a slow breathing halo.
+
+    The pulse timer only runs while the dot is actually on screen — three of
+    these live in the chrome, and the panel spends most of its life minimised
+    to the tray.
+    """
 
     def __init__(self, color: str = _C["green"], size: int = 10, parent=None):
         super().__init__(parent)
         self._color = QColor(color)
         self._size = size
-        self.setFixedSize(size + 8, size + 8)
+        self.setFixedSize(size + 10, size + 10)
         self._pulse = 0.0
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
-        self._timer.start(50)
 
     def set_color(self, color: str) -> None:
-        self._color = QColor(color)
+        new = QColor(color)
+        if new == self._color:
+            return
+        self._color = new
         self.update()
 
+    def showEvent(self, event) -> None:  # type: ignore[override]
+        super().showEvent(event)
+        if not self._timer.isActive():
+            self._timer.start(33)  # 30fps is ample for a 2s breath cycle
+
+    def hideEvent(self, event) -> None:  # type: ignore[override]
+        self._timer.stop()
+        super().hideEvent(event)
+
     def _tick(self) -> None:
-        self._pulse = (self._pulse + 0.08) % (2 * math.pi)
+        self._pulse = (self._pulse + 0.10) % (2 * math.pi)
         self.update()
 
     def paintEvent(self, event) -> None:  # type: ignore[override]
@@ -204,97 +149,216 @@ class GlowDot(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         cx, cy = self.width() / 2, self.height() / 2
         r = self._size / 2
+        breath = 0.5 + 0.5 * math.sin(self._pulse)
 
-        # Glow
-        glow_alpha = int(30 + 20 * math.sin(self._pulse))
-        glow = QRadialGradient(cx, cy, r * 2.5)
+        glow = QRadialGradient(cx, cy, r * 2.6)
         c = QColor(self._color)
-        c.setAlpha(glow_alpha)
-        glow.setColorAt(0, c)
+        c.setAlpha(int(26 + 30 * breath))
+        glow.setColorAt(0.35, c)
         c.setAlpha(0)
         glow.setColorAt(1, c)
         p.setBrush(QBrush(glow))
         p.setPen(Qt.PenStyle.NoPen)
-        p.drawEllipse(QPointF(cx, cy), r * 2.5, r * 2.5)
+        p.drawEllipse(QPointF(cx, cy), r * 2.6, r * 2.6)
 
-        # Core dot
-        p.setBrush(QBrush(self._color))
+        # Core dot with a light top edge so it reads as a bead, not a blob.
+        bead = QLinearGradient(cx, cy - r, cx, cy + r)
+        bead.setColorAt(0.0, self._color.lighter(128))
+        bead.setColorAt(1.0, self._color)
+        p.setBrush(QBrush(bead))
         p.drawEllipse(QPointF(cx, cy), r, r)
         p.end()
 
 
 # ─── Stat Card (custom painted) ────────────────────────────────────────
 
+def _parse_int(text: str) -> int | None:
+    """Return the value as an int, or None when it isn't a plain integer."""
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def _mix(a: QColor, b: QColor, t: float) -> QColor:
+    t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
+    return QColor(
+        int(a.red() + (b.red() - a.red()) * t),
+        int(a.green() + (b.green() - a.green()) * t),
+        int(a.blue() + (b.blue() - a.blue()) * t),
+    )
+
+
 class StatCard(QFrame):
-    """Clean metric card — value centered, no sparkline chart."""
+    """Metric tile that counts up to new values and lifts on hover.
+
+    A single timer serves the hover lerp, the count-up and the change flash,
+    and it stops as soon as all three have settled — eight of these sit on the
+    home page, so an always-on timer per card would be pure idle burn.
+    """
 
     def __init__(self, title: str, value: str = "0", color: str = _C["accent"],
                  icon: str = "", yellow: bool = False, parent=None):
         super().__init__(parent)
         self._title = title
-        self._value = value
-        self._color = QColor(color)
         self._icon = icon
         self._yellow = yellow
+        self._tint = theme.ACCENT2_RGB if yellow else theme.ACCENT_RGB
+        self._text_value = value
+        self._numeric = _parse_int(value)
+        self._shown = float(self._numeric or 0)
         self._hover = 0.0
-        self.setFixedHeight(90)
+        self._hover_target = 0.0
+        self._flash = 0.0
+        self._fit_key: tuple[str, int] | None = None
+        self._fit_size = 20
+        self.setFixedHeight(96)
         self.setMinimumWidth(110)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover)
 
-        self._glow_timer = QTimer(self)
-        self._glow_timer.timeout.connect(self._glow_tick)
-        self._glow_timer.start(40)
-        self._target_hover = 0.0
+        self._timer = QTimer(self)
+        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._timer.timeout.connect(self._tick)
+
+    # -- state ----------------------------------------------------------
 
     def set_value(self, value: str) -> None:
-        self._value = value
-        self.update()
+        if value == self._text_value:
+            return
+        self._text_value = value
+        parsed = _parse_int(value)
+        if parsed is not None and self._numeric is None:
+            self._shown = float(parsed)  # first numeric reading: don't ramp
+        self._numeric = parsed
+        self._flash = 1.0
+        self._wake()
 
     def enterEvent(self, event) -> None:  # type: ignore[override]
-        self._target_hover = 1.0
+        self._hover_target = 1.0
+        self._wake()
         super().enterEvent(event)
 
     def leaveEvent(self, event) -> None:  # type: ignore[override]
-        self._target_hover = 0.0
+        self._hover_target = 0.0
+        self._wake()
         super().leaveEvent(event)
 
-    def _glow_tick(self) -> None:
-        diff = self._target_hover - self._hover
-        if abs(diff) > 0.01:
-            self._hover += diff * 0.15
-            self.update()
+    def hideEvent(self, event) -> None:  # type: ignore[override]
+        self._timer.stop()
+        self._settle()
+        super().hideEvent(event)
+
+    def _settle(self) -> None:
+        if self._numeric is not None:
+            self._shown = float(self._numeric)
+        self._hover = self._hover_target
+        self._flash = 0.0
+
+    def _wake(self) -> None:
+        if not self.isVisible():
+            self._settle()
+            return
+        if not self._timer.isActive():
+            self._timer.start(16)
+
+    def _tick(self) -> None:
+        busy = False
+
+        delta = self._hover_target - self._hover
+        if abs(delta) > 0.004:
+            self._hover += delta * 0.22
+            busy = True
+        else:
+            self._hover = self._hover_target
+
+        if self._numeric is not None:
+            delta = self._numeric - self._shown
+            if abs(delta) > 0.5:
+                self._shown += delta * 0.20
+                busy = True
+            else:
+                self._shown = float(self._numeric)
+
+        if self._flash > 0.001:
+            self._flash = max(0.0, self._flash - 0.055)
+            busy = True
+
+        self.update()
+        if not busy:
+            self._timer.stop()
+
+    # -- paint ----------------------------------------------------------
+
+    def _fitted_size(self, value: str, width: int) -> int:
+        """Largest point size at which *value* still fits the card.
+
+        Long readings such as an uptime of "3h 42m 17s" would otherwise spill
+        past the rounded edge. Memoised because paintEvent runs at 60fps while
+        a value is counting up.
+        """
+        key = (value, width)
+        if key == self._fit_key:
+            return self._fit_size
+
+        available = width - 20
+        size = 20
+        while size > 11:
+            metrics = QFontMetricsF(QFont("Segoe UI", size, QFont.Weight.ExtraBold))
+            if metrics.horizontalAdvance(value) <= available:
+                break
+            size -= 1
+
+        self._fit_key = key
+        self._fit_size = size
+        return size
 
     def paintEvent(self, event) -> None:  # type: ignore[override]
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
-        r = QRectF(0, 0, w, h)
-        radius = 14.0
 
-        path = QPainterPath()
-        path.addRoundedRect(r, radius, radius)
+        # Hovering floats the card up; the strip it vacates falls back to the
+        # page background, which is what sells the lift.
+        lift = 3.0 * self._hover
+        rect = QRectF(0.5, 0.5 - lift, w - 1.0, h - 1.0)
+        glow = self._hover + self._flash * 0.6
 
-        if self._yellow:
-            bg_c = QColor(251, 234, 3, int(20 + 10 * self._hover))
-            border_c = QColor(251, 234, 3, int(50 + 30 * self._hover))
-        else:
-            bg_c = QColor(159, 130, 253, int(18 + 8 * self._hover))
-            border_c = QColor(159, 130, 253, int(45 + 35 * self._hover))
-
-        p.fillPath(path, bg_c)
-        p.setPen(QPen(border_c, 1))
-        p.drawPath(path)
+        _paint_card(
+            p, rect, 14.0,
+            tint=self._tint,
+            fill_alpha=int(16 + 12 * glow),
+            border_alpha=int(42 + 46 * glow),
+        )
 
         # Title
         p.setPen(QColor(_C["text3"]))
         p.setFont(QFont("Segoe UI", 10))
-        p.drawText(QRectF(0, 14, w, 18), Qt.AlignmentFlag.AlignCenter, self._title)
+        p.drawText(
+            QRectF(0, rect.top() + 13, w, 18),
+            Qt.AlignmentFlag.AlignCenter,
+            self._title,
+        )
 
-        # Value
-        p.setPen(QColor(_C["text"]))
-        p.setFont(QFont("Segoe UI", 20, QFont.Weight.ExtraBold))
-        p.drawText(QRectF(0, 34, w, 34), Qt.AlignmentFlag.AlignCenter, self._value)
+        # Value — flashes toward the accent for a beat whenever it changes.
+        value = (
+            str(int(round(self._shown)))
+            if self._numeric is not None
+            else self._text_value
+        )
+        p.setPen(_mix(QColor(_C["text"]), QColor(_C["accent_dk"]), self._flash))
+        p.setFont(QFont("Segoe UI", self._fitted_size(value, w), QFont.Weight.ExtraBold))
+        p.drawText(
+            QRectF(0, rect.top() + 33, w, 34),
+            Qt.AlignmentFlag.AlignCenter,
+            value,
+        )
 
+        # Underline that widens on hover.
+        bar_w = 22.0 + 26.0 * self._hover
+        bar = QRectF((w - bar_w) / 2, rect.bottom() - 9, bar_w, 3)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(theme.rgba(self._tint, int(70 + 110 * self._hover)))
+        p.drawRoundedRect(bar, 1.5, 1.5)
         p.end()
 
 
@@ -314,10 +378,15 @@ class ApiStatusCard(QFrame):
         self._call_count = "0"
         self._success_rate = "—"
         self._conn_status = "未连接"
+        self._state: tuple | None = None
 
     def set_info(self, provider: str, model: str, url: str, online: bool,
                  resp_time: str = "—", call_count: str = "0",
                  success_rate: str = "—") -> None:
+        state = (provider, model, url, online, resp_time, call_count, success_rate)
+        if state == self._state:
+            return  # called once a second; skip the repaint when nothing moved
+        self._state = state
         self._provider = provider
         self._model = model
         self._url = url
@@ -331,241 +400,61 @@ class ApiStatusCard(QFrame):
     def paintEvent(self, event) -> None:  # type: ignore[override]
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        r = QRectF(0, 0, self.width(), self.height())
-        radius = 16.0
+        w, h = self.width(), self.height()
+        _paint_card(
+            p, QRectF(0.5, 0.5, w - 1.0, h - 1.0), 16.0,
+            tint=theme.ACCENT2_RGB, fill_alpha=22, border_alpha=58,
+        )
 
-        path = QPainterPath()
-        path.addRoundedRect(r, radius, radius)
-
-        # Yellow-tinted background
-        bg_c = QColor(251, 234, 3, 25)
-        p.fillPath(path, bg_c)
-        border_c = QColor(251, 234, 3, 55)
-        p.setPen(QPen(border_c, 1))
-        p.drawPath(path)
-
-        # Provider name + status badge
+        # Provider name, with the online badge tucked in right after it.
+        name_text = f"{self._provider} · {self._model}" if self._model else self._provider
+        name_text = name_text[:50]
         p.setPen(QColor(_C["text"]))
         p.setFont(QFont("Segoe UI", 15, QFont.Weight.Bold))
-        name_text = f"{self._provider} · {self._model}" if self._model else self._provider
-        p.drawText(QRectF(24, 22, self.width() - 200, 24), Qt.AlignmentFlag.AlignLeft, name_text[:50])
+        p.drawText(QRectF(24, 20, w - 200, 24), Qt.AlignmentFlag.AlignLeft, name_text)
 
-        # Status badge
         if self._online:
-            badge_w = 42
-            badge_rect = QRectF(24 + min(p.fontMetrics().horizontalAdvance(name_text[:50]) + 12, self.width() - 250), 24, badge_w, 18)
-            badge_path = QPainterPath()
-            badge_path.addRoundedRect(badge_rect, 9, 9)
-            p.fillPath(badge_path, QColor(34, 197, 94, 30))
+            name_w = p.fontMetrics().horizontalAdvance(name_text)
+            badge_x = 24 + min(name_w + 12, w - 250)
+            badge = QRectF(badge_x, 23, 44, 19)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(22, 163, 74, 32))
+            p.drawRoundedRect(badge, 9.5, 9.5)
             p.setPen(QColor(_C["green"]))
             p.setFont(QFont("Segoe UI", 9, QFont.Weight.DemiBold))
-            p.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, "在线")
+            p.drawText(badge, Qt.AlignmentFlag.AlignCenter, "在线")
 
         # URL
         p.setPen(QColor(_C["text3"]))
         p.setFont(QFont("Consolas", 10))
-        p.drawText(QRectF(24, 52, self.width() - 48, 16), Qt.AlignmentFlag.AlignLeft, self._url[:80])
+        p.drawText(QRectF(24, 52, w - 48, 16), Qt.AlignmentFlag.AlignLeft, self._url[:80])
 
         # Stats grid (4 columns)
         stats = [
             ("连接状态", self._conn_status, self._online),
             ("响应时间", self._resp_time, False),
             ("调用次数", self._call_count, False),
-            ("成功率", self._success_rate, "ok" in self._success_rate.lower() or "%" in self._success_rate),
+            ("成功率", self._success_rate, "%" in self._success_rate),
         ]
-        col_w = (self.width() - 72) / 4
+        col_w = (w - 72) / 4
         y_base = 84
         for i, (label, value, is_ok) in enumerate(stats):
             x = 24 + i * col_w
-            stat_rect = QRectF(x, y_base, col_w - 8, 44)
-            stat_path = QPainterPath()
-            stat_path.addRoundedRect(stat_rect, 8, 8)
-            p.fillPath(stat_path, QColor(159, 130, 253, 12))
+            cell = QRectF(x, y_base, col_w - 8, 44)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(theme.accent(14))
+            p.drawRoundedRect(cell, 8, 8)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(theme.accent(24), 1))
+            p.drawRoundedRect(cell.adjusted(0.5, 0.5, -0.5, -0.5), 8, 8)
 
-            # Label
             p.setPen(QColor(_C["text3"]))
             p.setFont(QFont("Segoe UI", 9))
             p.drawText(QRectF(x + 4, y_base + 6, col_w - 16, 14), Qt.AlignmentFlag.AlignCenter, label)
 
-            # Value
-            val_color = QColor(_C["green"]) if is_ok else QColor(_C["text"])
-            p.setPen(val_color)
+            p.setPen(QColor(_C["green"]) if is_ok else QColor(_C["text"]))
             p.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
             p.drawText(QRectF(x + 4, y_base + 22, col_w - 16, 18), Qt.AlignmentFlag.AlignCenter, value)
-
-        p.end()
-
-
-# ─── Realtime Status Panel ─────────────────────────────────────────────
-
-class RealtimePanel(QFrame):
-    """Right-side panel showing real-time system status."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._api_name = "未配置"
-        self._api_online = False
-        self._latency = "—"
-        self._concurrent = "0"
-        self._mem_mb = 0
-        self._cpu_pct = 0
-
-    def update_status(self, api_name: str, online: bool, latency: str,
-                      concurrent: str, mem_mb: int, cpu_pct: int) -> None:
-        self._api_name = api_name
-        self._api_online = online
-        self._latency = latency
-        self._concurrent = concurrent
-        self._mem_mb = mem_mb
-        self._cpu_pct = cpu_pct
-        self.update()
-
-    def paintEvent(self, event) -> None:  # type: ignore[override]
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height()
-        r = QRectF(0, 0, w, h)
-        radius = 16.0
-
-        path = QPainterPath()
-        path.addRoundedRect(r, radius, radius)
-        p.fillPath(path, QColor(251, 234, 3, 25))
-        p.setPen(QPen(QColor(251, 234, 3, 55), 1))
-        p.drawPath(path)
-
-        # Header
-        p.setPen(QColor(_C["text"]))
-        p.setFont(QFont("Segoe UI", 13, QFont.Weight.DemiBold))
-        p.drawText(QRectF(16, 14, w - 32, 20), Qt.AlignmentFlag.AlignLeft, "📡 实时状态")
-
-        # Separator
-        sep_y = 38
-        p.setPen(QPen(QColor(251, 234, 3, 35), 1))
-        p.drawLine(QPointF(16, sep_y), QPointF(w - 16, sep_y))
-
-        # Rows
-        y = sep_y + 10
-        row_h = 28
-        self._draw_row(p, y, w, "API 状态", self._api_name,
-                        value_color=QColor(_C["green"]) if self._api_online else QColor(_C["text"]))
-        y += row_h
-        self._draw_row(p, y, w, "服务器延迟", self._latency)
-        y += row_h
-        self._draw_row(p, y, w, "并发请求数", self._concurrent)
-        y += row_h
-
-        # Memory
-        self._draw_row(p, y, w, "内存占用", f"{self._mem_mb} MB")
-        y += row_h
-        mem_pct = min(self._mem_mb / 512, 1.0)
-        self._draw_progress(p, y, w, mem_pct, QColor(_C["accent"]))
-        y += 14
-
-        # CPU
-        self._draw_row(p, y, w, "CPU 占用", f"{self._cpu_pct}%")
-        y += row_h
-        self._draw_progress(p, y, w, self._cpu_pct / 100, QColor(_C["green"]))
-
-        p.end()
-
-    def _draw_row(self, p: QPainter, y: float, w: float, label: str, value: str,
-                  value_color: QColor | None = None) -> None:
-        p.setPen(QColor(_C["text2"]))
-        p.setFont(QFont("Segoe UI", 11))
-        p.drawText(QRectF(16, y, w / 2 - 16, 20), Qt.AlignmentFlag.AlignLeft, label)
-        p.setPen(value_color or QColor(_C["text"]))
-        p.setFont(QFont("Segoe UI", 11, QFont.Weight.DemiBold))
-        p.drawText(QRectF(w / 2, y, w / 2 - 16, 20), Qt.AlignmentFlag.AlignRight, value)
-
-    def _draw_progress(self, p: QPainter, y: float, w: float, pct: float, color: QColor) -> None:
-        bar_w = w - 32
-        bar_h = 4
-        bar_rect = QRectF(16, y, bar_w, bar_h)
-        bar_path = QPainterPath()
-        bar_path.addRoundedRect(bar_rect, 2, 2)
-        p.fillPath(bar_path, QColor(159, 130, 253, 15))
-
-        fill_rect = QRectF(16, y, bar_w * pct, bar_h)
-        fill_path = QPainterPath()
-        fill_path.addRoundedRect(fill_rect, 2, 2)
-        p.fillPath(fill_path, color)
-
-
-# ─── Activity Panel ────────────────────────────────────────────────────
-
-class ActivityPanel(QFrame):
-    """Right-side panel showing recent activity log."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._items: list[tuple[str, str, str, str]] = []  # (persona, text, time, source)
-
-    def set_items(self, items: list[tuple[str, str, str, str]]) -> None:
-        self._items = items
-        self.update()
-
-    def add_item(self, color: str, desc: str, time_str: str, extra: str = "") -> None:
-        self._items.insert(0, (color, desc, time_str, extra))
-        if len(self._items) > 20:
-            self._items = self._items[:20]
-        self.update()
-
-    def paintEvent(self, event) -> None:  # type: ignore[override]
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height()
-        r = QRectF(0, 0, w, h)
-        radius = 16.0
-
-        path = QPainterPath()
-        path.addRoundedRect(r, radius, radius)
-        p.fillPath(path, QColor(251, 234, 3, 25))
-        p.setPen(QPen(QColor(251, 234, 3, 55), 1))
-        p.drawPath(path)
-
-        # Header
-        p.setPen(QColor(_C["text"]))
-        p.setFont(QFont("Segoe UI", 13, QFont.Weight.DemiBold))
-        p.drawText(QRectF(16, 14, w - 32, 20), Qt.AlignmentFlag.AlignLeft, "📋 最近活动")
-
-        # Separator
-        sep_y = 38
-        p.setPen(QPen(QColor(251, 234, 3, 35), 1))
-        p.drawLine(QPointF(16, sep_y), QPointF(w - 16, sep_y))
-
-        # Items
-        y = sep_y + 8
-        row_h = 38
-        persona_colors = {
-            "fun": QColor(_C["accent2"]),
-            "support": QColor(_C["green"]),
-            "sarcastic": QColor(_C["red"]),
-            "follower": QColor(_C["accent"]),
-            "troll": QColor(_C["red"]),
-        }
-        for i, (persona, text, time_str, _source) in enumerate(self._items[:8]):
-            if y + row_h > h - 8:
-                break
-            dot_color = persona_colors.get(persona, QColor(_C["accent"]))
-
-            # Dot
-            p.setBrush(QBrush(dot_color))
-            p.setPen(Qt.PenStyle.NoPen)
-            p.drawEllipse(QPointF(22, y + 10), 4, 4)
-
-            # Barrage text
-            p.setPen(QColor(_C["text"]))
-            p.setFont(QFont("Microsoft YaHei", 11, QFont.Weight.DemiBold))
-            p.drawText(QRectF(34, y + 2, w - 50, 18), Qt.AlignmentFlag.AlignLeft,
-                       text[:20] + ("…" if len(text) > 20 else ""))
-
-            # Persona + time
-            p.setPen(QColor(_C["text3"]))
-            p.setFont(QFont("Segoe UI", 9))
-            p.drawText(QRectF(34, y + 20, w - 50, 14), Qt.AlignmentFlag.AlignLeft,
-                       f"{persona} · {time_str}")
-
-            y += row_h
 
         p.end()
 
@@ -577,23 +466,46 @@ class GreetingBanner(QFrame):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(90)
+        self.setFixedHeight(92)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.update)
-        self._timer.start(1000)
+
+    def showEvent(self, event) -> None:  # type: ignore[override]
+        super().showEvent(event)
+        if not self._timer.isActive():
+            self._timer.start(1000)
+
+    def hideEvent(self, event) -> None:  # type: ignore[override]
+        self._timer.stop()
+        super().hideEvent(event)
 
     def paintEvent(self, event) -> None:  # type: ignore[override]
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
-        r = QRectF(0, 0, w, h)
-        radius = 16.0
+        rect = QRectF(0.5, 0.5, w - 1.0, h - 1.0)
+        path = _rounded(rect, 16.0)
 
-        path = QPainterPath()
-        path.addRoundedRect(r, radius, radius)
-        p.fillPath(path, QColor(159, 130, 253, 22))
-        p.setPen(QPen(QColor(159, 130, 253, 50), 1))
+        # Brand wash: violet on the left drifting to yellow on the right.
+        wash = QLinearGradient(rect.left(), rect.top(), rect.right(), rect.bottom())
+        wash.setColorAt(0.0, theme.accent(34))
+        wash.setColorAt(0.55, theme.accent(16))
+        wash.setColorAt(1.0, theme.accent2(30))
+        p.fillPath(path, QBrush(wash))
+
+        # Bloom behind the clock so the numerals sit on their own pool of light.
+        bloom = QRadialGradient(rect.right() - 90, rect.center().y(), 150)
+        bloom.setColorAt(0.0, QColor(255, 255, 255, 130))
+        bloom.setColorAt(1.0, QColor(255, 255, 255, 0))
+        p.fillPath(path, QBrush(bloom))
+
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(theme.accent(58), 1))
         p.drawPath(path)
+        p.setPen(QPen(QColor(255, 255, 255, 160), 1))
+        p.setClipRect(QRectF(rect.left(), rect.top(), rect.width(), 16))
+        p.drawPath(_rounded(rect.adjusted(1, 1, -1, -1), 15.0))
+        p.setClipping(False)
 
         # Greeting
         hour = time.localtime().tm_hour
@@ -610,55 +522,137 @@ class GreetingBanner(QFrame):
 
         p.setPen(QColor(_C["text"]))
         p.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
-        p.drawText(QRectF(24, 18, w - 200, 26), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, f"👋 {greet}！")
+        p.drawText(
+            QRectF(24, 18, w - 220, 26),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            f"👋 {greet}！",
+        )
 
-        p.setPen(QColor(_C["text3"]))
+        p.setPen(QColor(_C["text2"]))
         p.setFont(QFont("Segoe UI", 11))
-        p.drawText(QRectF(24, 48, w - 200, 18), Qt.AlignmentFlag.AlignLeft, "今天又是弹幕陪伴的一天~")
+        p.drawText(QRectF(24, 49, w - 220, 18), Qt.AlignmentFlag.AlignLeft, "今天又是弹幕陪伴的一天~")
 
-        # Clock — larger rects to fully display time
+        # Clock
         now = time.localtime()
         clock_text = time.strftime("%H:%M:%S", now)
         date_text = time.strftime(f"%Y-%m-%d 星期{'一二三四五六日'[now.tm_wday]}", now)
 
         p.setPen(QColor(_C["text"]))
         p.setFont(QFont("Segoe UI", 28, QFont.Weight.ExtraBold))
-        fm = p.fontMetrics()
-        clock_w = fm.horizontalAdvance(clock_text)
+        clock_w = p.fontMetrics().horizontalAdvance(clock_text)
         clock_x = w - clock_w - 32
-        p.drawText(QRectF(clock_x, 6, clock_w + 16, 42), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, clock_text)
+        p.drawText(
+            QRectF(clock_x, 6, clock_w + 16, 42),
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+            clock_text,
+        )
 
         p.setPen(QColor(_C["text3"]))
         p.setFont(QFont("Segoe UI", 10))
-        p.drawText(QRectF(clock_x - 12, 50, clock_w + 28, 18), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, date_text)
-
+        p.drawText(
+            QRectF(clock_x - 12, 50, clock_w + 28, 18),
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+            date_text,
+        )
         p.end()
 
 
 # ─── Modern Toggle ─────────────────────────────────────────────────────
 
 class ModernToggle(QCheckBox):
+    """Switch with a knob that slides between states.
+
+    Qt stylesheets can only swap the indicator's colour, which reads as a
+    blinking rectangle; painting it here buys a real travelling knob for the
+    cost of one short-lived timer per flip.
+    """
+
+    _TRACK_W = 44
+    _TRACK_H = 22
+    _GAP = 12
+
     def __init__(self, text: str = "", parent=None):
         super().__init__(text, parent)
-        self.setStyleSheet(f"""
-            QCheckBox {{
-                color: {_C['text2']};
-                font-size: 13px;
-                spacing: 10px;
-                background: transparent;
-            }}
-            QCheckBox::indicator {{
-                width: 36px;
-                height: 20px;
-                border-radius: 10px;
-                background: rgba(159,130,253,0.08);
-                border: 1px solid {_C['border']};
-            }}
-            QCheckBox::indicator:checked {{
-                background: {_C['accent2']};
-                border-color: transparent;
-            }}
-        """)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setStyleSheet("QCheckBox{background:transparent;border:none;font-size:13px}")
+        self._pos = 1.0 if self.isChecked() else 0.0
+        self._timer = QTimer(self)
+        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._timer.timeout.connect(self._tick)
+        self.toggled.connect(self._on_toggled)
+
+    def sizeHint(self) -> QSize:  # type: ignore[override]
+        metrics = self.fontMetrics()
+        text_w = metrics.horizontalAdvance(self.text())
+        return QSize(
+            self._TRACK_W + self._GAP + text_w + 4,
+            max(self._TRACK_H + 6, metrics.height() + 8),
+        )
+
+    def hitButton(self, pos) -> bool:  # type: ignore[override]
+        # The painted layout doesn't match QCheckBox's style-derived hit
+        # region, so make the whole widget clickable.
+        return self.rect().contains(pos)
+
+    def _on_toggled(self, _checked: bool) -> None:
+        if not self.isVisible():
+            self._pos = 1.0 if self.isChecked() else 0.0
+            self.update()
+            return
+        if not self._timer.isActive():
+            self._timer.start(16)
+
+    def hideEvent(self, event) -> None:  # type: ignore[override]
+        self._timer.stop()
+        self._pos = 1.0 if self.isChecked() else 0.0
+        super().hideEvent(event)
+
+    def _tick(self) -> None:
+        target = 1.0 if self.isChecked() else 0.0
+        delta = target - self._pos
+        if abs(delta) < 0.01:
+            self._pos = target
+            self._timer.stop()
+        else:
+            self._pos += delta * 0.28
+        self.update()
+
+    def paintEvent(self, event) -> None:  # type: ignore[override]
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        track_y = (self.height() - self._TRACK_H) / 2
+        track = QRectF(1, track_y, self._TRACK_W, self._TRACK_H)
+        radius = self._TRACK_H / 2
+
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(_mix(QColor(224, 217, 249), QColor(_C["accent2"]), self._pos))
+        p.drawRoundedRect(track, radius, radius)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(_mix(theme.accent(70), theme.accent2(150), self._pos), 1))
+        p.drawRoundedRect(track.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
+
+        # Knob
+        knob_d = self._TRACK_H - 6
+        travel = self._TRACK_W - knob_d - 6
+        knob_x = track.left() + 3 + travel * self._pos
+        knob = QRectF(knob_x, track_y + 3, knob_d, knob_d)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(theme.rgba(theme.SHADOW_RGB, 46))
+        p.drawEllipse(knob.translated(0, 1))
+        p.setBrush(QColor(255, 255, 255))
+        p.drawEllipse(knob)
+
+        # Label
+        p.setPen(QColor(_C["text2"] if self.isEnabled() else _C["text3"]))
+        p.setFont(self.font())
+        text_x = self._TRACK_W + self._GAP
+        p.drawText(
+            QRectF(text_x, 0, max(0, self.width() - text_x), self.height()),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            self.text(),
+        )
+        p.end()
 
 
 # ─── ComboBox (no scroll hijack) ─────────────────────────────────────────
@@ -672,39 +666,13 @@ class NoScrollComboBox(QComboBox):
 
 # ─── Sliders ────────────────────────────────────────────────────────────
 
-_STEP_SLIDER_STYLE = f"""
-    QSlider {{
-        background: transparent;
-        border: none;
-    }}
-    QSlider::groove:horizontal {{
-        background: transparent;
-        height: 6px;
-        border-radius: 3px;
-        border: 1px solid rgba(251,234,3,0.50);
-    }}
-    QSlider::handle:horizontal {{
-        background: {_C['accent2']};
-        width: 18px;
-        height: 18px;
-        margin: -6px 0;
-        border-radius: 9px;
-    }}
-    QSlider::handle:horizontal:pressed {{
-        background: {_C['accent']};
-    }}
-    QSlider::sub-page:horizontal {{
-        background: rgba(251,234,3,0.35);
-        border-radius: 3px;
-    }}
-"""
+_STEP_SLIDER_STYLE = SLIDER_STYLE
 
 _FONT_SIZE_LABELS = ["小", "较小", "适中", "较大", "大"]
 _FONT_SIZE_PX = [14, 18, 24, 32, 42]
 _DISPLAY_AREA_LABELS = ["20%", "40%", "60%", "80%", "100%"]
 _DISPLAY_AREA_VALUES = [20, 40, 60, 80, 100]
 _SPEED_LABELS = ["慢", "较慢", "适中", "较快", "快"]
-_SPEED_MULTIPLIERS = [0.5, 0.75, 1.0, 1.5, 2.0]
 
 
 class NoScrollSlider(QSlider):
@@ -765,17 +733,19 @@ class SectionCard(QFrame):
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(22, 18, 22, 18)
         self._layout.setSpacing(12)
+        # Solid white against the faintly tinted page: the separation comes
+        # from elevation rather than from another wash of purple.
         self.setStyleSheet(f"""
             QFrame {{
-                background: {_C['surface']};
+                background: {_C['card']};
                 border: 1px solid {_C['border']};
                 border-radius: 16px;
             }}
         """)
-        _shadow(self, radius=24, y=4, alpha=35)
+        _shadow(self, level=1)
         if title:
             lbl = QLabel(title)
-            lbl.setStyleSheet(f"color:{_C['text']};font-size:13px;font-weight:600;background:transparent;border:none;letter-spacing:0.3px")
+            lbl.setStyleSheet(f"color:{_C['text']};font-size:13px;font-weight:700;background:transparent;border:none;letter-spacing:0.4px")
             self._layout.addWidget(lbl)
             sep = QFrame()
             sep.setFixedHeight(1)
@@ -799,328 +769,56 @@ class SectionCard(QFrame):
         self._layout.addLayout(layout)
 
 
-# ─── API Config Dialog ─────────────────────────────────────────────────
+# ─── Navigation ────────────────────────────────────────────────────────
 
-class ApiConfigDialog(QWidget):
-    saved = Signal(ApiConfig, list)
-    connectionResult = Signal(bool, str)
+class NavIndicator(QWidget):
+    """The pill that slides behind whichever nav item is active.
 
-    def __init__(self, current: ApiConfig | None, history: list[ApiConfig], parent=None):
+    It sits underneath the buttons rather than being their background, so one
+    animated widget carries the selection instead of five stylesheet swaps.
+    """
+
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("API 设置")
-        self.setMinimumWidth(520)
-        self.setMinimumHeight(520)
-        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.WindowCloseButtonHint)
-        self._current = current
-        self._history: list[ApiConfig] = list(history)
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="api_dlg")
-        self._ct = None
-        self.connectionResult.connect(self._on_conn_result)
-        self._build()
-        self._load_current()
-        self._apply_styles()
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
-    def _build(self) -> None:
-        root = QVBoxLayout(self)
-        root.setContentsMargins(24, 24, 24, 24)
-        root.setSpacing(16)
+    def paintEvent(self, event) -> None:  # type: ignore[override]
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(0.5, 0.5, self.width() - 1.0, self.height() - 1.0)
+        path = _rounded(rect, 12.0)
 
-        title = QLabel("API 提供商配置")
-        title.setStyleSheet(f"color:{_C['text']};font-size:17px;font-weight:700;background:transparent")
-        root.addWidget(title)
+        wash = QLinearGradient(rect.left(), rect.top(), rect.right(), rect.top())
+        wash.setColorAt(0.0, theme.accent(46))
+        wash.setColorAt(1.0, theme.accent2(26))
+        p.fillPath(path, QBrush(wash))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(theme.accent(64), 1))
+        p.drawPath(path)
 
-        form_card = QFrame()
-        form_card.setStyleSheet(f"""
-            QFrame {{
-                background: {_C['surface']};
-                border: 1px solid {_C['border']};
-                border-radius: 14px;
-            }}
-        """)
-        fl = QVBoxLayout(form_card)
-        fl.setContentsMargins(18, 18, 18, 18)
-        fl.setSpacing(12)
+        # Accent bar on the leading edge.
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(_C["accent"]))
+        p.drawRoundedRect(QRectF(rect.left() + 4, rect.center().y() - 9, 3, 18), 1.5, 1.5)
+        p.end()
 
-        self._prov = NoScrollComboBox()
-        self._prov.setStyleSheet(_COMBO_STYLE)
-        for sp in SUPPORTED_PROVIDERS:
-            self._prov.addItem(sp.label, sp.key)
-        self._prov.currentIndexChanged.connect(self._on_prov)
 
-        self._url = QLineEdit()
-        self._url.setPlaceholderText("https://api.example.com/v1")
+class NavArea(QWidget):
+    """Nav button container that keeps *on_resize* informed.
 
-        self._mdl = NoScrollComboBox()
-        self._mdl.setStyleSheet(_COMBO_STYLE)
-        self._mdl.setEditable(True)
+    The indicator is positioned absolutely, so it has to be re-synced whenever
+    the buttons are re-laid-out — on window resize and while the sidebar
+    collapse animation is running.
+    """
 
-        self._key = QLineEdit()
-        self._key.setEchoMode(QLineEdit.EchoMode.Password)
-        self._key.setPlaceholderText("Ollama / 自定义可留空")
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.on_resize = None
 
-        for label_text, widget in [("提供商", self._prov), ("Base URL", self._url), ("模型", self._mdl), ("API Key", self._key)]:
-            row = QHBoxLayout()
-            row.setSpacing(10)
-            lbl = QLabel(label_text)
-            lbl.setFixedWidth(68)
-            lbl.setStyleSheet(f"color:{_C['text2']};font-size:13px;background:transparent;border:none")
-            row.addWidget(lbl)
-            row.addWidget(widget, 1)
-            fl.addLayout(row)
-        root.addWidget(form_card)
-
-        # Test button
-        test_row = QHBoxLayout()
-        self._tbtn = QPushButton("测试连接")
-        self._tbtn.setFixedHeight(34)
-        self._tbtn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._tbtn.setStyleSheet(f"""
-            QPushButton {{
-                background: rgba(159,130,253,0.06);
-                color: {_C['text']};
-                border: 1px solid {_C['border']};
-                border-radius: 10px;
-                padding: 0 18px;
-                font-size: 13px;
-            }}
-            QPushButton:hover {{ border-color: {_C['accent']}; }}
-        """)
-        self._tbtn.clicked.connect(self._test)
-        self._ts = QLabel("")
-        self._ts.setStyleSheet(f"font-size:12px;background:transparent;border:none")
-        test_row.addWidget(self._tbtn)
-        test_row.addWidget(self._ts, 1)
-        root.addLayout(test_row)
-
-        # History
-        hist_label = QLabel("历史配置")
-        hist_label.setStyleSheet(f"color:{_C['text']};font-size:13px;font-weight:600;background:transparent;border:none")
-        root.addWidget(hist_label)
-
-        self._hist = QListWidget()
-        self._hist.setMaximumHeight(120)
-        self._hist.setStyleSheet(f"""
-            QListWidget {{
-                background: {_C['surface']};
-                border: 1px solid {_C['border']};
-                border-radius: 10px;
-                padding: 4px;
-                color: {_C['text2']};
-                font-size: 12px;
-            }}
-            QListWidget::item {{ padding: 6px 10px; border-radius: 6px; }}
-            QListWidget::item:selected {{ background: {_C['surface2']}; color: {_C['text']}; }}
-            QListWidget::item:hover {{ background: {_C['surface2']}; }}
-        """)
-        self._hist.itemDoubleClicked.connect(self._load_hist)
-        self._refresh_hist()
-        root.addWidget(self._hist)
-
-        del_btn = QPushButton("删除选中")
-        del_btn.setStyleSheet(f"QPushButton{{background:transparent;color:{_C['red']};border:none;font-size:12px;padding:2px 4px}}QPushButton:hover{{text-decoration:underline}}")
-        del_btn.clicked.connect(self._del_hist)
-        root.addWidget(del_btn, 0, Qt.AlignmentFlag.AlignLeft)
-
-        # Bottom buttons
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
-        cancel_btn = QPushButton("取消")
-        cancel_btn.setFixedHeight(34)
-        cancel_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent;
-                color: {_C['text2']};
-                border: 1px solid {_C['border']};
-                border-radius: 10px;
-                padding: 0 18px;
-                font-size: 13px;
-            }}
-            QPushButton:hover {{ color: {_C['text']}; border-color: {_C['text2']}; }}
-        """)
-        cancel_btn.clicked.connect(self.close)
-
-        save_btn = QPushButton("保存配置")
-        save_btn.setFixedHeight(34)
-        save_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {_C['accent']}, stop:1 {_C['accent2']});
-                color: white;
-                border: none;
-                border-radius: 10px;
-                padding: 0 22px;
-                font-size: 13px;
-                font-weight: 600;
-            }}
-        """)
-        save_btn.clicked.connect(self._do_save)
-        btn_row.addWidget(cancel_btn)
-        btn_row.addWidget(save_btn)
-        root.addLayout(btn_row)
-
-    def _apply_styles(self) -> None:
-        self.setStyleSheet(f"""
-            QWidget {{
-                background: {_C['bg']};
-                color: {_C['text']};
-                font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
-                font-size: 13px;
-            }}
-            QLineEdit, QComboBox {{
-                background: {_C['surface']};
-                color: {_C['text']};
-                border: 1px solid {_C['border']};
-                border-radius: 10px;
-                padding: 8px 12px;
-                font-size: 13px;
-                min-height: 20px;
-            }}
-            QLineEdit:focus, QComboBox:focus {{ border-color: {_C['accent']}; }}
-            QComboBox::drop-down {{ border: none; padding-right: 8px; }}
-            QComboBox QAbstractItemView {{
-                background: #f8f7fc;
-                color: {_C['text']};
-                border: 1px solid {_C['border']};
-                border-radius: 10px;
-                selection-background-color: rgba(159,130,253,0.18);
-                outline: none;
-            }}
-        """)
-
-    def _load_current(self) -> None:
-        if self._current is None:
-            self._prov.setCurrentIndex(self._prov.findData("custom"))
-            self._protocol = "openai"
-            return
-        idx = self._prov.findData(self._current.provider)
-        if idx >= 0:
-            self._prov.setCurrentIndex(idx)
-        self._url.setText(self._current.base_url)
-        self._mdl.setCurrentText(self._current.model)
-        le = self._mdl.lineEdit()
-        if le:
-            le.setText(self._current.model)
-        self._key.setText(self._current.api_key)
-        self._protocol = self._current.protocol
-
-    def _on_prov(self, i: int) -> None:
-        k = self._prov.itemData(i) or "custom"
-        sp = provider_for_key(str(k))
-        self._url.setText(sp.base_url)
-        self._mdl.clear()
-        self._mdl.addItems(list(sp.models))
-        self._key.setEnabled(sp.requires_api_key)
-        if not sp.requires_api_key:
-            self._key.clear()
-        self._protocol = sp.protocol
-
-    def _cfg(self) -> ApiConfig:
-        k = str(self._prov.currentData() or "custom")
-        sp = provider_for_key(k)
-        return ApiConfig(
-            provider=k,
-            base_url=self._url.text().strip() or sp.base_url,
-            api_key=self._key.text().strip(),
-            model=self._mdl.currentText().strip() or (sp.models[0] if sp else ""),
-            protocol=getattr(self, '_protocol', sp.protocol),
-        )
-
-    def _refresh_hist(self) -> None:
-        self._hist.clear()
-        seen = set()
-        for c in self._history:
-            lbl = f"{c.provider}  |  {c.model}  |  {c.base_url}"
-            if lbl not in seen:
-                seen.add(lbl)
-                self._hist.addItem(lbl)
-
-    def _load_hist(self, item) -> None:
-        i = self._hist.row(item)
-        if 0 <= i < len(self._history):
-            c = self._history[i]
-            pi = self._prov.findData(c.provider)
-            if pi >= 0:
-                self._prov.setCurrentIndex(pi)
-            self._url.setText(c.base_url)
-            self._mdl.setCurrentText(c.model)
-            le = self._mdl.lineEdit()
-            if le:
-                le.setText(c.model)
-            self._key.setText(c.api_key)
-            self._ts.setText("")
-
-    def _del_hist(self) -> None:
-        r = self._hist.currentRow()
-        if 0 <= r < len(self._history):
-            del self._history[r]
-            self._refresh_hist()
-
-    def _test(self) -> None:
-        c = self._cfg()
-        if not c.base_url:
-            self._on_conn_result(False, "Base URL 为空")
-            return
-        self._tbtn.setEnabled(False)
-        self._tbtn.setText("测试中...")
-        self._ts.setText("连接中...")
-        self._ts.setStyleSheet(f"color:{_C['text3']};font-size:12px;background:transparent;border:none")
-        from PySide6.QtCore import QTimer as T
-        self._ct = T(self)
-        self._ct.setSingleShot(True)
-        self._ct.timeout.connect(lambda: self._on_conn_result(False, "连接超时 (15s)"))
-        self._ct.start(15000)
-        self._executor.submit(self._do_test, c)
-
-    def _do_test(self, c: ApiConfig) -> None:
-        base = c.base_url.rstrip("/")
-        if c.protocol == "anthropic":
-            if base.endswith("/v1") or "/anthropic" in base:
-                url = base + "/messages"
-            else:
-                url = base + "/v1/messages"
-            h = {"Content-Type": "application/json", "x-api-key": c.api_key, "anthropic-version": "2023-06-01"}
-            payload = {"model": c.model or "claude-sonnet-4-20250514", "max_tokens": 1, "messages": [{"role": "user", "content": "Hi"}]}
-        else:
-            url = base + "/chat/completions"
-            h = {"Content-Type": "application/json"}
-            if c.api_key:
-                h["Authorization"] = f"Bearer {c.api_key}"
-            payload = {"model": c.model or "gpt-4o-mini", "messages": [{"role": "user", "content": "Hi"}], "max_tokens": 1}
-        try:
-            with httpx.Client(timeout=httpx.Timeout(15, connect=8)) as cl:
-                r = cl.post(url, headers=h, json=payload)
-                if r.status_code == 200:
-                    self.connectionResult.emit(True, f"连接成功 ({c.model})")
-                else:
-                    self.connectionResult.emit(False, f"HTTP {r.status_code}: {r.text[:80]}")
-        except httpx.TimeoutException:
-            self.connectionResult.emit(False, "连接超时 (15s)")
-        except httpx.ConnectError:
-            self.connectionResult.emit(False, "无法连接")
-        except Exception as e:
-            self.connectionResult.emit(False, str(e)[:60])
-
-    def _on_conn_result(self, ok: bool, msg: str) -> None:
-        if self._ct:
-            self._ct.stop()
-            self._ct = None
-        self._tbtn.setEnabled(True)
-        self._tbtn.setText("测试连接")
-        self._ts.setText(msg)
-        self._ts.setStyleSheet(f"color:{_C['green'] if ok else _C['red']};font-size:12px;font-weight:600;background:transparent;border:none")
-
-    def _do_save(self) -> None:
-        c = self._cfg()
-        self._history = [h for h in self._history if not (h.provider == c.provider and h.base_url == c.base_url and h.model == c.model)]
-        self._history.insert(0, c)
-        if len(self._history) > 20:
-            self._history = self._history[:20]
-        self.saved.emit(c, list(self._history))
-        self.close()
-        logger.info("API 已保存: %s | %s (历史 %d)", c.provider, c.model, len(self._history))
-
-    def closeEvent(self, event) -> None:
-        self._executor.shutdown(wait=False, cancel_futures=True)
-        super().closeEvent(event)
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        if self.on_resize is not None:
+            self.on_resize()
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1160,6 +858,9 @@ class ControlPanel(QWidget):
         self.resize(1200, 750)
         self._settings = settings
         self._settings_store = settings_store
+        self._controller = None
+        self._sidebar_anims: list = []
+        self._indicator_anim = None
         self._build()
         self._apply_global()
         self._load_settings(settings)
@@ -1186,10 +887,34 @@ class ControlPanel(QWidget):
         self._stack.addWidget(self._page_settings())
         self._stack.addWidget(self._page_logs())
         self._stack.addWidget(self._page_about())
+        # Cross-fades page changes; see SnapshotFader for why it works on a
+        # grabbed still rather than on the live pages.
+        self._fader = SnapshotFader(self._stack)
         right.addWidget(self._stack, 1)
         right.addWidget(self._mk_bottombar())
 
         root.addLayout(right, 1)
+        self._nav_area.on_resize = self._sync_indicator
+
+    # ── Visibility: nothing animates while the panel is in the tray ──────
+
+    def showEvent(self, event) -> None:  # type: ignore[override]
+        super().showEvent(event)
+        # Layouts have not necessarily settled yet during showEvent.
+        QTimer.singleShot(0, self._sync_indicator)
+        if self._controller is not None and not self._stats_timer.isActive():
+            self._stats_timer.start()
+        if not self._time_timer.isActive():
+            self._time_timer.start(1000)
+        self._tick_clock()
+        # NOTE: no windowOpacity fade here. Animating opacity from inside
+        # showEvent toggles WS_EX_LAYERED mid-show on Windows and the native
+        # window can end up never becoming visible at all.
+
+    def hideEvent(self, event) -> None:  # type: ignore[override]
+        self._stats_timer.stop()
+        self._time_timer.stop()
+        super().hideEvent(event)
 
     # ── Sidebar (collapsible: 216px ↔ 64px) ─────────────────────────────
 
@@ -1219,7 +944,7 @@ class ControlPanel(QWidget):
                 border-radius: 14px;
             }}
         """)
-        _shadow(logo_card, radius=20, y=4, alpha=70)
+        _shadow(logo_card, level=2)
         logo_inner = QVBoxLayout(logo_card)
         logo_inner.setContentsMargins(18, 14, 18, 14)
         logo_inner.setSpacing(2)
@@ -1236,9 +961,14 @@ class ControlPanel(QWidget):
         logo_wrap.addWidget(logo_card, 1)
         lay.addLayout(logo_wrap)
 
-        # Nav buttons
-        nav_area = QWidget()
+        # Nav buttons. The indicator is created first so it stays behind them
+        # in the sibling stacking order.
+        nav_area = NavArea()
         nav_area.setStyleSheet("background:transparent;border:none")
+        self._nav_area = nav_area
+        self._nav_indicator = NavIndicator(nav_area)
+        self._nav_indicator.hide()
+
         nav_lay = QVBoxLayout(nav_area)
         nav_lay.setContentsMargins(12, 20, 12, 0)
         nav_lay.setSpacing(4)
@@ -1302,7 +1032,6 @@ class ControlPanel(QWidget):
     def _toggle_sidebar(self) -> None:
         self._sidebar_collapsed = not self._sidebar_collapsed
         target_w = _SIDEBAR_COLLAPSED_W if self._sidebar_collapsed else _SIDEBAR_W
-        self._sidebar.setFixedWidth(target_w)
 
         # Show/hide text labels
         show = not self._sidebar_collapsed
@@ -1317,21 +1046,34 @@ class ControlPanel(QWidget):
                 self._nav_btns[i].setText(f"  {icon}")
             else:
                 self._nav_btns[i].setText(f"  {icon}   {name}")
-            self._nav_btns[i].setStyleSheet(self._nav_style(i == self._stack.currentIndex(), collapsed=self._sidebar_collapsed))
+            self._nav_btns[i].setStyleSheet(
+                self._nav_style(i == self._stack.currentIndex(), collapsed=self._sidebar_collapsed)
+            )
+
+        # A previous glide may still be running if the user double-clicks the
+        # menu button; stop it or the two fight over the same property.
+        for anim in self._sidebar_anims:
+            stop_safely(anim)
+        # setFixedWidth pins both bounds, so both have to be animated for the
+        # sidebar to actually glide instead of snapping.
+        self._sidebar_anims = [
+            animate(self._sidebar, b"minimumWidth", target_w, duration=DUR_SLOW, easing=EASE_OUT),
+            animate(self._sidebar, b"maximumWidth", target_w, duration=DUR_SLOW, easing=EASE_OUT),
+        ]
 
     @staticmethod
     def _nav_style(active: bool, collapsed: bool = False) -> str:
         align = "center" if collapsed else "left"
-        pad = "0" if collapsed else "14px"
+        # Leave room on the left for the indicator's accent bar.
+        pad = "0" if collapsed else "18px"
         if active:
             return f"""
                 QPushButton {{
-                    background: rgba(159,130,253,0.06);
-                    color: {_C['accent']};
-                    border: 1px solid rgba(159,130,253,0.16);
-                    border-radius: 12px;
+                    background: transparent;
+                    color: {_C['accent_dk']};
+                    border: none;
                     font-size: 13px;
-                    font-weight: 500;
+                    font-weight: 700;
                     text-align: {align};
                     padding-left: {pad};
                 }}
@@ -1340,7 +1082,7 @@ class ControlPanel(QWidget):
             QPushButton {{
                 background: transparent;
                 color: {_C['text3']};
-                border: 1px solid transparent;
+                border: none;
                 border-radius: 12px;
                 font-size: 13px;
                 font-weight: 500;
@@ -1349,17 +1091,49 @@ class ControlPanel(QWidget):
             }}
             QPushButton:hover {{
                 color: {_C['text2']};
-                background: rgba(159,130,253,0.06);
+                background: rgba(159,130,253,0.055);
             }}
         """
 
+    def _sync_indicator(self) -> None:
+        """Snap the indicator onto the active button without animating."""
+        self._place_indicator(animated=False)
+
+    def _place_indicator(self, idx: int | None = None, *, animated: bool) -> None:
+        stack = getattr(self, "_stack", None)
+        if stack is None or not getattr(self, "_nav_btns", None):
+            return
+        if idx is None:
+            idx = stack.currentIndex()
+        button = self._nav_btns[idx]
+        target = QRect(button.x(), button.y(), button.width(), button.height())
+        if target.width() <= 0 or target.height() <= 0:
+            return
+        stop_safely(self._indicator_anim)
+        self._indicator_anim = None
+        if animated and self._nav_indicator.isVisible():
+            self._indicator_anim = animate_geometry(
+                self._nav_indicator, target, duration=DUR_SLOW, easing=EASE_OUT,
+            )
+        else:
+            self._nav_indicator.setGeometry(target)
+        self._nav_indicator.show()
+
     def _switch_page(self, idx: int) -> None:
+        if idx == self._stack.currentIndex():
+            self._place_indicator(idx, animated=True)
+            return
+
+        self._fader.capture()
         self._stack.setCurrentIndex(idx)
+        self._fader.release(DUR_BASE)
+
         for i, btn in enumerate(self._nav_btns):
             btn.setChecked(i == idx)
             btn.setStyleSheet(self._nav_style(i == idx, collapsed=self._sidebar_collapsed))
         self._page_title.setText(self._NAV[idx][0])
         self._page_subtitle.setText(self._NAV_SUBTITLES[idx])
+        self._place_indicator(idx, animated=True)
 
     # ── Top Bar ──────────────────────────────────────────────────────────
 
@@ -1369,7 +1143,8 @@ class ControlPanel(QWidget):
         bar.setObjectName("topbar")
         bar.setStyleSheet(f"""
             QFrame#topbar {{
-                background: #f8f7fc;
+                background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                    stop:0 #ffffff, stop:1 {_C['bg2']});
                 border-bottom: 1px solid {_C['border']};
             }}
         """)
@@ -1401,14 +1176,16 @@ class ControlPanel(QWidget):
 
         lay.addStretch()
 
-        # Live time
+        # Live time — started/stopped by showEvent so it idles in the tray.
         self._time_label = QLabel()
-        self._time_label.setStyleSheet(f"color:{_C['text3']};font-size:12px;background:transparent;border:none;font-variant-numeric:tabular-nums")
+        self._time_label.setStyleSheet(
+            f"color:{_C['text']};font-size:12px;font-weight:500;background:transparent;"
+            "border:none;font-variant-numeric:tabular-nums"
+        )
         lay.addWidget(self._time_label)
         self._time_timer = QTimer(self)
-        self._time_timer.timeout.connect(lambda: self._time_label.setText(time.strftime("%H:%M")))
-        self._time_timer.start(10000)
-        self._time_label.setText(time.strftime("%H:%M"))
+        self._time_timer.timeout.connect(self._tick_clock)
+        self._tick_clock()
 
         # Status dot
         lay.addSpacing(12)
@@ -1421,6 +1198,14 @@ class ControlPanel(QWidget):
 
         return bar
 
+    _WEEKDAYS = ("一", "二", "三", "四", "五", "六", "日")
+
+    def _tick_clock(self) -> None:
+        now = time.localtime()
+        self._time_label.setText(
+            f"{time.strftime('%Y-%m-%d %H:%M:%S', now)} 星期{self._WEEKDAYS[now.tm_wday]}"
+        )
+
     # ── Bottom Bar ───────────────────────────────────────────────────────
 
     def _mk_bottombar(self) -> QFrame:
@@ -1429,7 +1214,8 @@ class ControlPanel(QWidget):
         bar.setObjectName("bottombar")
         bar.setStyleSheet(f"""
             QFrame#bottombar {{
-                background: #f8f7fc;
+                background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                    stop:0 {_C['bg2']}, stop:1 #ffffff);
                 border-top: 1px solid {_C['border']};
             }}
         """)
@@ -1492,7 +1278,7 @@ class ControlPanel(QWidget):
             }}
         """)
         self._save_btn.clicked.connect(self._save_settings)
-        _shadow(self._save_btn, radius=16, y=2, alpha=40)
+        _shadow(self._save_btn, level=1)
         lay.addWidget(self._save_btn)
 
         # Exit button
@@ -1607,17 +1393,7 @@ class ControlPanel(QWidget):
 
         self._api_url = QLineEdit()
         self._api_url.setPlaceholderText("https://api.example.com/v1")
-        self._api_url.setStyleSheet(f"""
-            QLineEdit {{
-                background: rgba(159,130,253,0.06);
-                color: {_C['text']};
-                border: 1px solid {_C['border']};
-                border-radius: 8px;
-                padding: 7px 12px;
-                font-size: 13px;
-            }}
-            QLineEdit:focus {{ border-color: {_C['accent']}; }}
-        """)
+        self._api_url.setStyleSheet(LINE_EDIT_STYLE)
         form_card.add_row("Base URL", self._api_url)
 
         self._api_mdl = NoScrollComboBox()
@@ -1628,17 +1404,7 @@ class ControlPanel(QWidget):
         self._api_key = QLineEdit()
         self._api_key.setEchoMode(QLineEdit.EchoMode.Password)
         self._api_key.setPlaceholderText("Ollama / 自定义可留空")
-        self._api_key.setStyleSheet(f"""
-            QLineEdit {{
-                background: rgba(159,130,253,0.06);
-                color: {_C['text']};
-                border: 1px solid {_C['border']};
-                border-radius: 8px;
-                padding: 7px 12px;
-                font-size: 13px;
-            }}
-            QLineEdit:focus {{ border-color: {_C['accent']}; }}
-        """)
+        self._api_key.setStyleSheet(LINE_EDIT_STYLE)
         form_card.add_row("API Key", self._api_key)
         lay.addWidget(form_card)
 
@@ -1649,35 +1415,15 @@ class ControlPanel(QWidget):
         self._api_test_btn = QPushButton("测试连接")
         self._api_test_btn.setFixedHeight(36)
         self._api_test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._api_test_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: rgba(159,130,253,0.08);
-                color: {_C['text']};
-                border: 1px solid {_C['border']};
-                border-radius: 10px;
-                padding: 0 20px;
-                font-size: 13px;
-            }}
-            QPushButton:hover {{ border-color: {_C['accent']}; }}
-        """)
+        self._api_test_btn.setStyleSheet(theme.GHOST_BUTTON_STYLE)
         self._api_test_btn.clicked.connect(self._test_api_on_page)
         btn_row.addWidget(self._api_test_btn)
 
         self._api_save_btn = QPushButton("保存配置")
         self._api_save_btn.setFixedHeight(36)
         self._api_save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._api_save_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
-                    stop:0 {_C['accent']}, stop:1 {_C['accent2']});
-                color: #000;
-                border: none;
-                border-radius: 10px;
-                padding: 0 20px;
-                font-size: 13px;
-                font-weight: 700;
-            }}
-        """)
+        self._api_save_btn.setStyleSheet(theme.PRIMARY_BUTTON_STYLE)
+        _shadow(self._api_save_btn, level=1)
         self._api_save_btn.clicked.connect(self._save_api_on_page)
         btn_row.addWidget(self._api_save_btn)
 
@@ -1757,10 +1503,17 @@ class ControlPanel(QWidget):
         card1 = SectionCard("💬 弹幕设置")
         self._density = NoScrollComboBox()
         self._density.setStyleSheet(_COMBO_STYLE)
+        self._density.setFixedWidth(240)
         for label, val in [("低", "low"), ("中", "medium"), ("高", "high")]:
             self._density.addItem(label, val)
         self._density.currentTextChanged.connect(lambda: self.densityChanged.emit(self._density.currentData()))
-        card1.add_row("弹幕密度", self._density)
+        density_wrap = QWidget()
+        density_wrap.setStyleSheet("background:transparent;border:none")
+        dw_lay = QHBoxLayout(density_wrap)
+        dw_lay.setContentsMargins(0, 0, 0, 0)
+        dw_lay.addWidget(self._density)
+        dw_lay.addStretch()
+        card1.add_row("弹幕密度", density_wrap)
 
         # Helper: label | slider | value
         def _slider_row(label_text: str, slider: QWidget, val_widget: QLabel) -> QHBoxLayout:
@@ -2107,7 +1860,8 @@ class ControlPanel(QWidget):
 
     def set_controller(self, ctrl) -> None:
         self._controller = ctrl
-        self._stats_timer.start()
+        if self.isVisible():
+            self._stats_timer.start()
 
     def _on_pause(self, paused: bool) -> None:
         self._pause_btn.setText(f"{'▶' if paused else '⏸'} {'继续' if paused else '暂停'}")
@@ -2442,30 +2196,18 @@ class ControlPanel(QWidget):
             QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
                 background: rgba(159,130,253,0.15);
             }}
-            QSlider::groove:horizontal {{
-                height: 4px;
-                background: rgba(159,130,253,0.15);
-                border-radius: 2px;
-            }}
-            QSlider::handle:horizontal {{
-                width: 14px;
-                height: 14px;
-                margin: -5px 0;
-                border-radius: 7px;
-                background: {_C['accent']};
-            }}
             QScrollArea {{ border: none; background: transparent; }}
             QScrollBar:vertical {{
                 background: transparent;
-                width: 6px;
-                margin: 0;
+                width: 10px;
+                margin: 4px 2px 4px 0;
             }}
             QScrollBar::handle:vertical {{
-                background: {_C['border']};
-                border-radius: 3px;
-                min-height: 30px;
+                background: {_C['border_l']};
+                border-radius: 4px;
+                min-height: 36px;
             }}
-            QScrollBar::handle:vertical:hover {{ background: {_C['text3']}; }}
+            QScrollBar::handle:vertical:hover {{ background: {_C['accent']}; }}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
             QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
-        """)
+        """ + SLIDER_STYLE)
